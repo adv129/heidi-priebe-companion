@@ -37,6 +37,8 @@
   --line-soft: #efe7d6;
   --paper: #fefdf7;         /* warm-white journal page for assistant replies */
   --paper-line: #ece0c8;    /* faint ruled line on paper */
+  /* crumpled-paper crease texture — pre-baked to a static raster */
+  --crumple: url("/img/crumple.jpg");
   --user-bubble: #c7d1a4;   /* sage — cool hue reads clearly against warm paper */
   --user-ink: #333a1e;
   --danger: #b1574a;
@@ -327,7 +329,7 @@ code {
   background-color: var(--paper);
   background-image:
     radial-gradient(125% 120% at 50% 38%, transparent 58%, rgba(120, 92, 48, 0.11) 100%),
-    url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='500'%20height='380'%3E%3Cfilter%20id='c'%3E%3CfeTurbulence%20type='fractalNoise'%20baseFrequency='0.013%200.017'%20numOctaves='4'%20seed='11'%20result='n'/%3E%3CfeDiffuseLighting%20in='n'%20surfaceScale='2.6'%20diffuseConstant='1.05'%20lighting-color='%23fff2df'%3E%3CfeDistantLight%20azimuth='235'%20elevation='47'/%3E%3C/feDiffuseLighting%3E%3C/filter%3E%3Crect%20width='500'%20height='380'%20filter='url(%23c)'/%3E%3C/svg%3E");
+    var(--crumple);
   background-size: cover, cover;
   background-position: center, center;
   background-repeat: no-repeat, no-repeat;
@@ -341,6 +343,44 @@ code {
 @media (prefers-color-scheme: dark) {
   /* on dark paper the creases read as gentle highlights, not shadows */
   .msg.assistant { background-blend-mode: multiply, soft-light; }
+}
+
+/* Loading state: a blank sheet that fills upward in discrete stop-motion steps,
+   like a page being written / a progress bar. The container keeps a fixed
+   footprint so the page never reflows; only the inner sheet's height changes. */
+.msg.assistant.loading {
+  width: min(260px, 72%);
+  height: 150px;
+  padding: 0;
+  border: none;
+  background: none;
+  box-shadow: none;
+  transform: rotate(-0.4deg);
+  display: flex;
+  align-items: flex-end;   /* the sheet grows up from the bottom */
+  overflow: visible;
+}
+.load-sheet {
+  display: block;
+  width: 100%;
+  height: 20%;
+  border: 1px solid color-mix(in srgb, var(--ink) 14%, var(--paper));
+  border-radius: 2px;
+  background-color: var(--paper);
+  background-image:
+    radial-gradient(125% 120% at 50% 38%, transparent 58%, rgba(120, 92, 48, 0.11) 100%),
+    var(--crumple);
+  background-repeat: no-repeat, no-repeat;
+  background-size: 100% 150px, 100% 150px;   /* fixed to full height → reveals, never stretches */
+  background-position: bottom, bottom;
+  background-blend-mode: multiply, multiply;
+  box-shadow: 0 10px 22px -10px rgba(70, 52, 32, 0.34), 0 2px 5px rgba(70, 52, 32, 0.12);
+  animation: paperFill 2.4s steps(6, end) infinite;
+}
+@media (prefers-color-scheme: dark) { .load-sheet { background-blend-mode: multiply, soft-light; } }
+@keyframes paperFill { from { height: 20%; } to { height: 100%; } }
+@media (prefers-reduced-motion: reduce) {
+  .load-sheet { animation: none; height: 100%; }
 }
 
 .msg.user {

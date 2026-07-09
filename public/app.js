@@ -456,18 +456,19 @@ async function renderChat() {
     input.value = ""; autoGrow(input);
     app.querySelector("#chips")?.remove();
     addBubble(scroll, "user", msg);
-    const typing = addBubble(scroll, "assistant", ""); typing.classList.add("spin");
+    const typing = addBubble(scroll, "assistant", ""); typing.classList.add("loading");
+    typing.innerHTML = '<span class="load-sheet"></span>';
     markFocused(); scrollDown(); requestAnimationFrame(applyFocusState);
     app.querySelector("#send-btn").disabled = true;
     try {
       const r = await api("POST", "/api/chat", { message: msg });
-      typing.classList.remove("spin");
+      typing.classList.remove("loading");
       typing.remove();
       const bubble = addBubble(scroll, "assistant", r.reply, r.trace);
       setLens(r.safety ? "your wellbeing comes first" : (r.activeSkill || "listening"), r.safety);
       if (r.close) renderCloseNudge(scroll);
     } catch (e) {
-      typing.classList.remove("spin");
+      typing.classList.remove("loading");
       typing.textContent = "(couldn't reach the model: " + e.message + ")";
     } finally {
       app.querySelector("#send-btn").disabled = false;
