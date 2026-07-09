@@ -10,6 +10,10 @@ let appConfig = null;
 let providers = null;
 let obOptions = null;
 let mode = localStorage.getItem("mode") || "companion";
+// Window/document listeners that must be torn down when a view re-renders,
+// or they accumulate across navigations and stack up work on every scroll/click.
+let chatScrollHandler = null;
+let tonePopDocHandler = null;
 
 // ─── API + utils ───────────────────────────────────────────────────────────
 
@@ -432,7 +436,18 @@ async function renderChat() {
     applyFocusState();
   };
   focusBtn.addEventListener("click", () => setFocus(!focusOn));
-  window.addEventListener("scroll", applyFocusState, { passive: true });
+  // Tear down the previous chat's scroll handler so they don't pile up across
+  // navigations (stale handlers firing every scroll frame = progressive lag).
+  if (chatScrollHandler) window.removeEventListener("scroll", chatScrollHandler);
+  // Throttle to one layout read per frame — reading scrollHeight on every raw
+  // scroll event was thrashing layout and causing the scroll to stutter.
+  let scrollTick = false;
+  chatScrollHandler = () => {
+    if (scrollTick) return;
+    scrollTick = true;
+    requestAnimationFrame(() => { scrollTick = false; applyFocusState(); });
+  };
+  window.addEventListener("scroll", chatScrollHandler, { passive: true });
 
   let sess = { messages: [] };
   try { sess = await api("GET", "/api/session"); } catch {}
@@ -578,12 +593,14 @@ function setupTonePopover() {
     e.stopPropagation();
     pop.style.display === "none" ? open() : close();
   });
-  // Close when clicking anywhere else. Guard so listeners left over from a
-  // previous chat render no-op instead of touching a detached popover.
-  document.addEventListener("click", () => {
+  // Close when clicking anywhere else. Remove any prior handler first so they
+  // don't accumulate across chat re-renders.
+  if (tonePopDocHandler) document.removeEventListener("click", tonePopDocHandler);
+  tonePopDocHandler = () => {
     if (!document.body.contains(pop)) return;
     if (pop.style.display !== "none") close();
-  });
+  };
+  document.addEventListener("click", tonePopDocHandler);
 }
 
 function addBubble(scroll, role, text, trace) {

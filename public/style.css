@@ -37,7 +37,8 @@
   --line-soft: #efe7d6;
   --paper: #fefdf7;         /* warm-white journal page for assistant replies */
   --paper-line: #ece0c8;    /* faint ruled line on paper */
-  /* crumpled-paper crease texture — pre-baked to a static raster */
+  /* crumpled-paper crease texture — pre-baked to a static raster (the live SVG
+     lighting filter re-rasterized during scroll and caused intermittent lag) */
   --crumple: url("/img/crumple.jpg");
   --user-bubble: #c7d1a4;   /* sage — cool hue reads clearly against warm paper */
   --user-ink: #333a1e;
@@ -96,18 +97,28 @@ html { overflow-x: clip; }  /* contain the full-bleed toolbar's 100vw */
 body {
   margin: 0;
   background-color: var(--bg);
-  /* faint hand-drawn plant wallpaper over a soft warm gradient */
-  background-image: url("/img/plants.svg"), var(--bg-grad);
-  background-repeat: repeat, no-repeat;
-  background-size: 168px 168px, cover;
-  background-attachment: fixed, fixed;
   color: var(--ink);
   font-family: var(--font-body);
   font-optical-sizing: auto;
   font-size: 1.02rem;
   line-height: 1.62;
   -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
+}
+/* Background on a FIXED, GPU-composited layer: rasterized once and never
+   repainted on scroll (a scrolling background re-rasters the newly-exposed
+   strip every frame — that was the lag). It doesn't move, so nothing re-paints. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-color: var(--bg);
+  background-image: url("/img/plants.png"), var(--bg-grad);
+  background-repeat: repeat, no-repeat;
+  background-size: 168px 168px, cover;
+  pointer-events: none;
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 /* ── Top bar ─────────────────────────────────────────────────────────────── */
@@ -405,16 +416,18 @@ code {
 
 /* ── Focus mode: only the latest reply stays crisp; the rest recedes ──────── */
 #chat-scroll.focus .msg { transition: opacity 0.5s ease, filter 0.5s ease; }
+/* opacity only (no blur) — blurring the SVG-textured cards was a heavy repaint */
 #chat-scroll.focus:not(.revealed) .msg:not(.focused) {
-  opacity: 0.16 !important;
-  filter: blur(2.5px) !important;
+  opacity: 0.12 !important;
   pointer-events: none;
 }
 
 .composer {
   position: fixed;
   bottom: 0; left: 0; right: 0;
-  background: linear-gradient(to top, var(--bg) 62%, transparent);
+  /* solid (was a semi-transparent gradient) — a transparent fixed bar forces the
+     browser to recomposite the moving content behind it on every scroll frame */
+  background: var(--bg);
   padding: 14px clamp(16px, 4vw, 40px) 20px;
   z-index: 15;
 }
