@@ -1,0 +1,18 @@
+{
+  "provider": "claude-p",
+  "openrouter": {
+    "model": "openai/gpt-4o-mini"
+  },
+  "user": {
+    "name": "",
+    "tone": "balanced",
+    "toneDials": {
+      "inquisitive": 3,
+      "challenging": 3,
+      "validating": 3
+    },
+    "openerStyle": "smart"
+  },
+  "consentAcknowledged": false,
+  "setupComplete": false
+}

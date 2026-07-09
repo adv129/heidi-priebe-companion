@@ -1,0 +1,29 @@
+# Secrets
+.env
+
+# Runtime config (per-machine)
+config.json
+
+# Sensitive personal memory — never commit
+memory/profile.json
+memory/graph.json
+memory/current.json
+memory/sessions/
+
+# Dev state snapshots (backup/restore tool)
+_snapshots/
+
+# Debug trace log (contains conversation text)
+logs/
+
+# macOS
+.DS_Store
+
+# Node
+node_modules/
+
+# Local Claude Code settings (per-machine)
+.claude/settings.local.json
+
+# Design reference screenshots (not app code)
+design-refs/

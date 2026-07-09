@@ -1,0 +1,312 @@
+/*
+ * Heidi Priebe Agent — Local web server (src/server.js).
+ *
+ * Zero-dependency Node http server bound to 127.0.0.1 only (single-user,
+ * sensitive personal data — never 0.0.0.0). Serves the SPA in public/ and a
+ * small JSON API over the engine in core.js.
+ *
+ * Start:   node src/server.js
+ * Options: --no-open   skip auto-opening the browser
+ * Env:     PORT        override default port (4180)
+ *          CI          skip auto-open when set
+ */
+
+"use strict";
+
+// ─── .env loader (before any other require reads process.env) ────────────────
+
+const fs = require("fs");
+const path = require("path");
+
+const ROOT = path.resolve(__dirname, "..");
+const ENV_PATH = path.join(ROOT, ".env");
+
+if (fs.existsSync(ENV_PATH)) {
+  try {
+    for (const line of fs.readFileSync(ENV_PATH, "utf8").split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.startsWith("#")) continue;
+      const eq = t.indexOf("=");
+      if (eq === -1) continue;
+      const key = t.slice(0, eq).trim();
+      const val = t.slice(eq + 1).trim();
+      if (key && !(key in process.env)) process.env[key] = val;
+    }
+  } catch { /* non-fatal */ }
+}
+
+// ─── Requires ────────────────────────────────────────────────────────────────
+
+const http = require("http");
+const { spawn } = require("child_process");
+
+const core = require("./core");
+const skills = require("./skills");
+const memory = require("./memory");
+const T = require("./templates");
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const DEFAULT_PORT = parseInt(process.env.PORT || "4180", 10);
+const MAX_PORT_TRIES = 10;
+const PUBLIC_DIR = path.join(ROOT, "public");
+
+const MIME = {
+  html: "text/html; charset=utf-8",
+  js: "application/javascript; charset=utf-8",
+  css: "text/css; charset=utf-8",
+  json: "application/json; charset=utf-8",
+  svg: "image/svg+xml",
+  png: "image/png",
+  ico: "image/x-icon",
+  woff2: "font/woff2",
+  woff: "font/woff",
+};
+
+const NO_OPEN = process.argv.includes("--no-open");
+let busy = false; // serialize chat/consolidate so turns don't race on current.json
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+function json(res, status, body) {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(payload),
+  });
+  res.end(payload);
+}
+
+function apiError(res, status, message) {
+  json(res, status, { error: message });
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (c) => (data += c));
+    req.on("end", () => resolve(data));
+    req.on("error", reject);
+  });
+}
+
+function deepMerge(dst, src) {
+  for (const [k, v] of Object.entries(src)) {
+    if (v && typeof v === "object" && !Array.isArray(v) && dst[k] && typeof dst[k] === "object" && !Array.isArray(dst[k])) {
+      deepMerge(dst[k], v);
+    } else {
+      dst[k] = v;
+    }
+  }
+  return dst;
+}
+
+// ─── Request handler ──────────────────────────────────────────────────────────
+
+async function handleRequest(req, res) {
+  const url = new URL(req.url, "http://127.0.0.1");
+  const pathname = url.pathname;
+
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+
+  // ── Static files ─────────────────────────────────────────────────────────
+  if (req.method === "GET" && !pathname.startsWith("/api/")) {
+    const filePath =
+      pathname === "/" || pathname === ""
+        ? path.join(PUBLIC_DIR, "index.html")
+        : path.join(PUBLIC_DIR, pathname.replace(/^\/+/, ""));
+    const rel = path.relative(PUBLIC_DIR, filePath);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) { apiError(res, 400, "invalid path"); return; }
+    const ext = path.extname(filePath).slice(1).toLowerCase();
+    try {
+      const content = fs.readFileSync(filePath);
+      res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream", "Content-Length": content.length });
+      res.end(content);
+    } catch {
+      apiError(res, 404, "not found");
+    }
+    return;
+  }
+
+  // ── GET /api/config ────────────────────────────────────────────────────────
+  if (req.method === "GET" && pathname === "/api/config") {
+    json(res, 200, core.loadConfig() || {});
+    return;
+  }
+
+  // ── POST /api/config — onboarding save + validate + seed profile ────────────
+  if (req.method === "POST" && pathname === "/api/config") {
+    let body;
+    try { body = JSON.parse(await readBody(req)); } catch { apiError(res, 400, "invalid JSON"); return; }
+    if (typeof body !== "object" || body === null || Array.isArray(body)) { apiError(res, 400, "body must be an object"); return; }
+
+    const cfg = core.loadConfig() || {};
+    deepMerge(cfg, body);
+
+    const REQUIRED = [!!(cfg.user && cfg.user.name), cfg.consentAcknowledged === true];
+    const complete = REQUIRED.every(Boolean);
+    if (complete) cfg.setupComplete = true;
+    core.saveConfig(cfg);
+
+    // Seed / refresh the profile from intake whenever we have a name.
+    if (cfg.user && cfg.user.name) memory.seedProfileFromOnboarding(cfg.user);
+
+    json(res, 200, { ok: true, config: cfg, setupComplete: !!cfg.setupComplete });
+    return;
+  }
+
+  // ── GET /api/providers ───────────────────────────────────────────────────────
+  if (req.method === "GET" && pathname === "/api/providers") {
+    json(res, 200, [
+      { id: "claude-p", label: "Claude Code (claude -p)", needsKey: false, available: true, recommended: true },
+      { id: "openrouter", label: "OpenRouter", needsKey: true, available: !!process.env.OPENROUTER_API_KEY },
+    ]);
+    return;
+  }
+
+  // ── GET /api/skills — the manifest (debug / "what I know") ───────────────────
+  if (req.method === "GET" && pathname === "/api/skills") {
+    json(res, 200, skills.loadManifest({ fresh: true }));
+    return;
+  }
+
+  // ── GET /api/session — current session status ────────────────────────────────
+  if (req.method === "GET" && pathname === "/api/session") {
+    json(res, 200, core.currentSessionView());
+    return;
+  }
+
+  // ── GET /api/onboard/options — MC options + conversational section defs ───────
+  if (req.method === "GET" && pathname === "/api/onboard/options") {
+    json(res, 200, { mc: T.MC, sections: T.SECTIONS });
+    return;
+  }
+
+  // ── GET /api/opener — the opening message/chips for a new chat ────────────────
+  if (req.method === "GET" && pathname === "/api/opener") {
+    json(res, 200, core.getOpener(core.loadConfig() || {}));
+    return;
+  }
+
+  // ── POST /api/onboard/chat — one warm follow-up in a conversational section ────
+  if (req.method === "POST" && pathname === "/api/onboard/chat") {
+    if (busy) { apiError(res, 409, "busy"); return; }
+    busy = true;
+    try {
+      let body; try { body = JSON.parse(await readBody(req)); } catch { apiError(res, 400, "invalid JSON"); return; }
+      const reply = await core.onboardChat(body.title || body.section, body.messages || [], body.final === true);
+      json(res, 200, { reply });
+    } catch (e) { if (!res.headersSent) apiError(res, 500, e.message); }
+    finally { busy = false; }
+    return;
+  }
+
+  // ── POST /api/onboard/finish — extract onboarding into the profile ─────────────
+  if (req.method === "POST" && pathname === "/api/onboard/finish") {
+    if (busy) { apiError(res, 409, "busy"); return; }
+    busy = true;
+    try {
+      let body; try { body = JSON.parse(await readBody(req)); } catch { apiError(res, 400, "invalid JSON"); return; }
+      const result = await core.onboardFinish(body || {});
+      json(res, 200, result);
+    } catch (e) { if (!res.headersSent) apiError(res, 500, e.message); }
+    finally { busy = false; }
+    return;
+  }
+
+  // ── POST /api/chat — one conversation turn ────────────────────────────────────
+  if (req.method === "POST" && pathname === "/api/chat") {
+    if (busy) { apiError(res, 409, "busy"); return; }
+    busy = true;
+    try {
+      let body;
+      try { body = JSON.parse(await readBody(req)); } catch { apiError(res, 400, "invalid JSON"); return; }
+      const message = typeof body.message === "string" ? body.message.trim() : "";
+      if (!message) { apiError(res, 400, "message required"); return; }
+      const cfg = core.loadConfig();
+      if (!cfg || !cfg.setupComplete) { apiError(res, 400, "setup incomplete"); return; }
+      const result = await core.handleTurn(message);
+      json(res, 200, result);
+    } catch (e) {
+      if (!res.headersSent) apiError(res, 500, e.message);
+    } finally {
+      busy = false;
+    }
+    return;
+  }
+
+  // ── POST /api/session/end — consolidate into memory ───────────────────────────
+  if (req.method === "POST" && pathname === "/api/session/end") {
+    if (busy) { apiError(res, 409, "busy"); return; }
+    busy = true;
+    try {
+      const result = await core.endSession();
+      json(res, 200, result);
+    } catch (e) {
+      if (!res.headersSent) apiError(res, 500, e.message);
+    } finally {
+      busy = false;
+    }
+    return;
+  }
+
+  // ── GET /api/memory — profile + session graph ─────────────────────────────────
+  if (req.method === "GET" && pathname === "/api/memory") {
+    json(res, 200, memory.memoryView());
+    return;
+  }
+
+  // ── GET /api/memory/session/:id ───────────────────────────────────────────────
+  const sessMatch = pathname.match(/^\/api\/memory\/session\/([\w.:-]+)$/);
+  if (req.method === "GET" && sessMatch) {
+    const r = memory.recallSession(sessMatch[1]);
+    if (!r) { apiError(res, 404, "no such session"); return; }
+    json(res, 200, r);
+    return;
+  }
+
+  // ── DELETE /api/memory/session/:id ────────────────────────────────────────────
+  if (req.method === "DELETE" && sessMatch) {
+    json(res, 200, memory.deleteSession(sessMatch[1]));
+    return;
+  }
+
+  // ── DELETE /api/memory — wipe everything (privacy) ────────────────────────────
+  if (req.method === "DELETE" && pathname === "/api/memory") {
+    core.clearCurrent();
+    json(res, 200, memory.deleteAll());
+    return;
+  }
+
+  apiError(res, 404, `no route: ${req.method} ${pathname}`);
+}
+
+// ─── Browser opener + startup ──────────────────────────────────────────────────
+
+function openBrowser(u) {
+  if (process.env.CI || NO_OPEN) return;
+  const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", u] : [u];
+  try { spawn(opener, args, { stdio: "ignore", detached: true }).unref(); } catch { /* non-fatal */ }
+}
+
+function startServer(port, triesLeft) {
+  const server = http.createServer(async (req, res) => {
+    try { await handleRequest(req, res); }
+    catch (e) { if (!res.headersSent) apiError(res, 500, `internal error: ${e.message}`); }
+  });
+  server.on("error", (e) => {
+    if (e.code === "EADDRINUSE" && triesLeft > 0) startServer(port + 1, triesLeft - 1);
+    else { console.error(`[heidi-agent] Failed to start on port ${port}: ${e.message}`); process.exitCode = 1; }
+  });
+  server.listen(port, "127.0.0.1", () => {
+    const u = `http://127.0.0.1:${port}`;
+    console.log(`Heidi Priebe Agent running at ${u}`);
+    openBrowser(u);
+  });
+}
+
+startServer(DEFAULT_PORT, MAX_PORT_TRIES);

@@ -1,0 +1,126 @@
+{
+  "skills": [
+    {
+      "name": "agent-core",
+      "dir": "agent-core",
+      "isCore": true,
+      "description": "The operating system for this library. Load FIRST in every new conversation, before any topical skill. Defines how to get to know the person, what to track about them, how to decide which skill to load, and the safety/ethics rules that override everything else. Use whenever starting a conversation, whenever unsure which skill applies, and whenever the conversation shifts topic.",
+      "references": [
+        "conversational-stance.md",
+        "intake-questions.md",
+        "routing-map.md"
+      ],
+      "hasReferences": true
+    },
+    {
+      "name": "attachment-theory",
+      "dir": "attachment-theory",
+      "isCore": false,
+      "description": "Heidi Priebe's attachment framework. Load when the person describes relationship anxiety or avoidance, fear of abandonment or engulfment, partners who run hot/cold, repeated painful relationship patterns, anxious-avoidant dynamics, or asks directly about attachment styles. Also load for \"why do I always attract X\" and push-pull relationship dynamics.",
+      "references": [
+        "anxious-avoidant-dynamic.md",
+        "anxious-preoccupied.md",
+        "dismissive-avoidant.md",
+        "earned-secure.md",
+        "fearful-avoidant.md"
+      ],
+      "hasReferences": true
+    },
+    {
+      "name": "boundaries-and-relationships",
+      "dir": "boundaries-and-relationships",
+      "isCore": false,
+      "description": "Heidi Priebe's boundaries and relational health framework. Load when the person can't say no, describes codependency or enmeshment (especially with family), confuses walls with boundaries, avoids all conflict, feels responsible for everyone's emotions, or asks how to set/communicate/hold a boundary. Also covers healthy conflict and repair.",
+      "references": [
+        "boundary-mechanics.md",
+        "codependency.md",
+        "conflict-and-repair.md"
+      ],
+      "hasReferences": true
+    },
+    {
+      "name": "complex-trauma-reparenting",
+      "dir": "complex-trauma-reparenting",
+      "isCore": false,
+      "description": "Heidi Priebe's complex trauma and reparenting framework (drawing on Pete Walker's CPTSD work). Load when the person describes a chronically difficult childhood (emotional neglect, unpredictability, abuse, parentification), reactions wildly disproportionate to triggers, \"emotional flashbacks,\" a vicious inner critic that sounds like a parent, or explicitly asks about CPTSD, inner child work, or reparenting. HIGH-CAUTION SKILL — pacing and therapy referral rules inside are mandatory.",
+      "references": [
+        "emotional-flashbacks.md",
+        "inner-critic.md",
+        "reparenting-practices.md"
+      ],
+      "hasReferences": true
+    },
+    {
+      "name": "emotional-processing",
+      "dir": "emotional-processing",
+      "isCore": false,
+      "description": "Heidi Priebe's emotional processing framework. Load when the person intellectualizes everything, says \"I understand my patterns but nothing changes,\" reports numbness or emptiness, asks how to actually FEEL feelings, cries \"for no reason,\" or uses analysis/productivity/content-consumption to avoid emotion. This is the engine-room skill — most other skills route here when insight stalls.",
+      "references": [
+        "emotion-messages.md",
+        "repression-styles.md",
+        "somatic-basics.md"
+      ],
+      "hasReferences": true
+    },
+    {
+      "name": "grief-and-letting-go",
+      "dir": "grief-and-letting-go",
+      "isCore": false,
+      "description": "Heidi Priebe's grief framework. Load for breakups, deaths, friendship endings, job/identity losses, \"I can't move on,\" rumination about an ex, and — critically — ambiguous and disenfranchised grief: mourning a childhood that never happened, a parent who is alive but incapable, a future that won't occur, or a version of oneself that's gone. Also load when someone seems stuck precisely because they refuse to grieve.",
+      "references": [
+        "ambiguous-grief.md",
+        "breakups.md",
+        "grief-practices.md"
+      ],
+      "hasReferences": true
+    },
+    {
+      "name": "personality-typology",
+      "dir": "personality-typology",
+      "isCore": false,
+      "description": "Heidi Priebe's MBTI / Jungian cognitive functions framework (her earlier body of work — she authored books on the types). Load when the person asks about their MBTI type, cognitive functions, type dynamics, \"why do INFPs/ENFPs/etc. do X,\" type-based relationship compatibility, or wants self-understanding through a typology lens. Handle with the caveats built into this skill — typology is a mirror, not a cage.",
+      "references": [
+        "cognitive-functions.md",
+        "type-development.md",
+        "typing-guide.md"
+      ],
+      "hasReferences": true
+    },
+    {
+      "name": "self-abandonment",
+      "dir": "self-abandonment",
+      "isCore": false,
+      "description": "Heidi Priebe's self-abandonment framework. Load when the person describes chronic people-pleasing, losing themselves in relationships, not knowing what they want or who they are, saying yes while meaning no, overriding their own limits, resentment from overgiving, or abandoning plans/values/needs whenever someone else wants something.",
+      "references": [
+        "people-pleasing.md",
+        "reclaiming-identity.md",
+        "self-trust.md"
+      ],
+      "hasReferences": true
+    },
+    {
+      "name": "self-honesty-and-cognitive-dissonance",
+      "dir": "self-honesty-and-cognitive-dissonance",
+      "isCore": false,
+      "description": "Heidi Priebe's cognitive dissonance and radical self-honesty framework. Load when the person suspects they're lying to themselves, keeps rationalizing a relationship/job/habit that contradicts their stated values, feels \"out of integrity,\" asks \"am I in denial?\", makes decisions and instantly re-litigates them, or describes a persistent gap between what they know and what they do.",
+      "references": [
+        "knowing-doing-gap.md",
+        "self-honesty-practices.md",
+        "values-clarification.md"
+      ],
+      "hasReferences": true
+    },
+    {
+      "name": "toxic-shame",
+      "dir": "toxic-shame",
+      "isCore": false,
+      "description": "Heidi Priebe's toxic shame framework. Load when the person expresses feeling fundamentally flawed, bad, unlovable, or \"too much\"; describes a brutal inner critic, perfectionism, chronic hiding of their real self, fear of being \"found out,\" or collapse after criticism. Also load when shame appears disguised as contempt, grandiosity, people-pleasing, or rage.",
+      "references": [
+        "healing-shame.md",
+        "recognizing-shame.md",
+        "shame-binds.md"
+      ],
+      "hasReferences": true
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "heidi-priebe-agent",
+  "version": "0.1.0",
+  "description": "A local-first therapeutic companion that applies Heidi Priebe's psychoeducational frameworks in conversation, with a referential-network memory across sessions.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "serve": "node src/server.js",
+    "manifest": "node src/skills.js --emit-manifest",
+    "snapshot": "node scripts/snapshot.js"
+  },
+  "dependencies": {}
+}

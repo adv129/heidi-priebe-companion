@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="168" height="168" viewBox="0 0 168 168">
+  <g fill="none" stroke="#7f8c66" stroke-opacity="0.4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <!-- potted plant, top-left -->
+    <path d="M30 52 L50 52 L47 66 L33 66 Z"/>
+    <path d="M40 52 C40 42 35 35 29 31"/>
+    <path d="M29 31 C23 29 19 32 18 38 C25 38 29 35 29 31 Z"/>
+    <path d="M40 52 C40 40 46 33 53 29"/>
+    <path d="M53 29 C59 28 63 31 64 37 C57 38 53 34 53 29 Z"/>
+    <path d="M40 52 C40 40 40 32 40 24"/>
+    <path d="M40 24 C36 18 37 12 40 8 C43 12 44 18 40 24 Z"/>
+
+    <!-- little mushroom, top-right -->
+    <path d="M118 56 C118 47 125 42 130 42 C135 42 142 47 142 56 Z"/>
+    <path d="M118 56 L142 56"/>
+    <path d="M125 56 L125 70 C125 72 135 72 135 70 L135 56"/>
+    <circle cx="126" cy="50" r="1.4"/>
+    <circle cx="134" cy="51" r="1.4"/>
+
+    <!-- leafy sprig, bottom-left -->
+    <path d="M62 150 C60 136 64 122 62 110"/>
+    <path d="M62 132 C54 128 48 130 44 137 C52 139 58 137 62 132 Z"/>
+    <path d="M62 122 C70 118 76 120 80 127 C72 129 66 127 62 122 Z"/>
+    <path d="M62 110 C58 104 59 98 62 94 C65 98 66 104 62 110 Z"/>
+
+    <!-- berry branch, bottom-right -->
+    <path d="M126 146 C128 136 134 130 142 128"/>
+    <circle cx="126" cy="146" r="3"/>
+    <circle cx="134" cy="138" r="3"/>
+    <circle cx="143" cy="128" r="3"/>
+  </g>
+</svg>
