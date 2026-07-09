@@ -98,14 +98,24 @@ function agentCoreRoutingTable() {
 async function timedComplete(label, prompt, opts, extra) {
   const start = Date.now();
   let output = "", error = null;
+  const usage = {}; // adapters may fill { model, tokens, costUsd } via this sink
   try {
-    output = await provider.complete(prompt, opts);
+    output = await provider.complete(prompt, { ...opts, kind: label, usageSink: usage });
     return output;
   } catch (e) {
     error = e.message;
     throw e;
   } finally {
-    tracer.log({ label, model: (opts && opts.provider) || "claude-p", ms: Date.now() - start, ...(extra || {}), prompt, output, error });
+    tracer.log({
+      label,
+      model: usage.model || (opts && opts.provider) || "claude-p",
+      ms: Date.now() - start,
+      ...(usage.tokens ? { usage: usage.tokens, costUsd: usage.costUsd } : {}),
+      ...(extra || {}),
+      prompt,
+      output,
+      error,
+    });
   }
 }
 

@@ -3,6 +3,15 @@
   "openrouter": {
     "model": "openai/gpt-4o-mini"
   },
+  "anthropic": {
+    "models": {
+      "route": "claude-opus-4-8",
+      "respond": "claude-sonnet-5",
+      "consolidate": "claude-opus-4-8",
+      "onboard-extract": "claude-opus-4-8",
+      "onboard-followup": "claude-sonnet-5"
+    }
+  },
   "user": {
     "name": "",
     "tone": "balanced",

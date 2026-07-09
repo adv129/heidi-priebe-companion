@@ -26,6 +26,12 @@ Requirements: **Node ≥ 18** and one provider. The default (`claude-p`) needs n
 existing Claude Code login. To use OpenRouter instead, `cp .env.example .env`, add
 `OPENROUTER_API_KEY`, and pick "OpenRouter" in Settings.
 
+To use the Anthropic API directly (per-token billing, but far cheaper per call than `claude-p` —
+it drops the Claude Code agent scaffolding and picks a model per call kind), set
+`"provider": "anthropic"` in `config.json` and add `ANTHROPIC_API_KEY` to `.env`. Models are
+configurable per call kind under `config.anthropic.models` (defaults: Opus 4.8 for
+routing/consolidation/extraction where analysis matters, Sonnet 5 for conversation).
+
 First launch drops you into a short onboarding (provider → consent → name → what brings you →
 review), then into **Talk**.
 
