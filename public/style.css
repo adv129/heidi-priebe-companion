@@ -35,7 +35,7 @@
   --sage-soft: #e2e4d0;
   --line: #e6dbc6;
   --line-soft: #efe7d6;
-  --paper: #fdf8ec;         /* warm journal page for assistant replies */
+  --paper: #fefdf7;         /* warm-white journal page for assistant replies */
   --paper-line: #ece0c8;    /* faint ruled line on paper */
   --user-bubble: #c7d1a4;   /* sage — cool hue reads clearly against warm paper */
   --user-ink: #333a1e;
@@ -326,7 +326,7 @@ code {
   color: var(--ink);
   background-color: var(--paper);
   background-image:
-    radial-gradient(125% 120% at 50% 38%, transparent 52%, rgba(120, 92, 48, 0.16) 100%),
+    radial-gradient(125% 120% at 50% 38%, transparent 58%, rgba(120, 92, 48, 0.11) 100%),
     url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='500'%20height='380'%3E%3Cfilter%20id='c'%3E%3CfeTurbulence%20type='fractalNoise'%20baseFrequency='0.013%200.017'%20numOctaves='4'%20seed='11'%20result='n'/%3E%3CfeDiffuseLighting%20in='n'%20surfaceScale='2.6'%20diffuseConstant='1.05'%20lighting-color='%23fff2df'%3E%3CfeDistantLight%20azimuth='235'%20elevation='47'/%3E%3C/feDiffuseLighting%3E%3C/filter%3E%3Crect%20width='500'%20height='380'%20filter='url(%23c)'/%3E%3C/svg%3E");
   background-size: cover, cover;
   background-position: center, center;
@@ -398,7 +398,7 @@ code {
 }
 .composer-inner textarea:focus { box-shadow: none; }
 .composer textarea { min-height: 44px; max-height: 180px; }
-.composer-inner .primary { flex: none; align-self: stretch; }
+.composer-inner .primary { flex: none; align-self: flex-end; }
 
 .lens {
   font-family: var(--font-ui);
