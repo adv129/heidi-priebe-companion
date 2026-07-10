@@ -6,10 +6,10 @@
   "anthropic": {
     "models": {
       "route": "claude-opus-4-8",
-      "respond": "claude-sonnet-5",
+      "respond": "claude-sonnet-4-6",
       "consolidate": "claude-opus-4-8",
       "onboard-extract": "claude-opus-4-8",
-      "onboard-followup": "claude-sonnet-5"
+      "onboard-followup": "claude-sonnet-4-6"
     }
   },
   "user": {
