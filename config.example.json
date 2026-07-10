@@ -1,5 +1,14 @@
 {
   "provider": "claude-p",
+  "claude-p": {
+    "models": {
+      "route": "claude-opus-4-8",
+      "respond": "claude-sonnet-4-6",
+      "consolidate": "claude-opus-4-8",
+      "onboard-extract": "claude-opus-4-8",
+      "onboard-followup": "claude-sonnet-4-6"
+    }
+  },
   "openrouter": {
     "model": "openai/gpt-4o-mini"
   },

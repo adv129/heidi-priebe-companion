@@ -33,8 +33,15 @@ function runCli(cmd, args) {
 
 // --- Adapter: Claude Code headless (`claude -p`) -------------------------
 // Uses the user's existing Claude Code login. No API key, no SDK.
-function claudeP(prompt) {
-  return runCli("claude", ["-p"])(prompt);
+// Optional model pin via config["claude-p"]: a single { model } applies to every
+// call, or { models: { <kind>: id } } overrides per call kind. With neither set,
+// runs bare `claude -p` (whatever the login resolves — currently Opus 4.8).
+function claudeP(prompt, opts = {}) {
+  const conf = (opts.config && opts.config["claude-p"]) || {};
+  const model = (conf.models && conf.models[opts.kind]) || conf.model;
+  const args = ["-p"];
+  if (model) args.push("--model", model);
+  return runCli("claude", args)(prompt);
 }
 
 // --- Adapter: OpenRouter / raw API key ----------------------------------
