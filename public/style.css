@@ -33,6 +33,8 @@
   --accent-soft: #f1ddca;
   --sage: #7f8c66;          /* muted sage green */
   --sage-soft: #e2e4d0;
+  --gold: #a8842c;          /* warm gold — life events, report-backs */
+  --gold-soft: #f0e5c4;
   --line: #e6dbc6;
   --line-soft: #efe7d6;
   --paper: #fefdf7;         /* warm-white journal page for assistant replies */
@@ -74,6 +76,8 @@
     --accent-soft: #46372a;
     --sage: #a4b389;
     --sage-soft: #39402e;
+    --gold: #cfae5a;
+    --gold-soft: #3f3722;
     --line: #3d362c;
     --line-soft: #322c24;
     --paper: #2f2921;
@@ -356,42 +360,92 @@ code {
   .msg.assistant { background-blend-mode: multiply, soft-light; }
 }
 
-/* Loading state: a blank sheet that fills upward in discrete stop-motion steps,
-   like a page being written / a progress bar. The container keeps a fixed
-   footprint so the page never reflows; only the inner sheet's height changes. */
+/* Loading state: a hanging paper scroll that gently unfurls and re-rolls while
+   the reply is written (JS-driven so it can be grabbed and pulled — a small
+   fidget). The container keeps a fixed footprint so the page never reflows. */
 .msg.assistant.loading {
   width: min(260px, 72%);
-  height: 150px;
+  height: 170px;
   padding: 0;
   border: none;
   background: none;
   box-shadow: none;
   transform: rotate(-0.4deg);
-  display: flex;
-  align-items: flex-end;   /* the sheet grows up from the bottom */
   overflow: visible;
 }
-.load-sheet {
-  display: block;
+.scroll-loader {
+  display: flex;
+  flex-direction: column;
   width: 100%;
-  height: 20%;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.scroll-loader.held { cursor: grabbing; }
+/* The rolled cylinders at both ends: the same crumpled paper as the sheet,
+   shaded top-to-bottom so they read as curls, with spiral cross-sections
+   (concentric rings of wound paper) peeking out at each end. */
+.scroll-roll {
+  height: 18px;
+  width: 100%; /* left overhang from the -1% shift; right side stays close to the sheet */
+  margin-left: -1%;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--ink) 22%, var(--paper));
+  background-color: var(--paper);
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.65) 4%, rgba(255, 255, 255, 0) 40%, rgba(70, 52, 32, 0.38) 100%),
+    var(--crumple);
+  background-size: cover, cover;
+  background-position: center, center;
+  background-blend-mode: normal, multiply;
+  box-shadow: 0 3px 7px rgba(70, 52, 32, 0.3);
+  position: relative;
+  z-index: 1;
+}
+/* Right end faces the viewer: the paper's end face with a thin dark line
+   winding inward — the actual edge of the rolled sheet, drawn as an
+   elliptical SVG spiral on paper. The left end has no cap at all — the
+   cylinder simply curves away. */
+.scroll-roll::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -2px;
+  width: 10px;
+  height: 17px;
+  transform: translateY(-50%);
+  border-radius: 50%;
+  background-color: var(--paper);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 17'%3E%3Cpath d='M5 1 A4 7.5 0 0 1 5 16 A3.5 6.5 0 0 1 5 3 A2.5 5 0 0 1 5 13 A1.8 3.5 0 0 1 5 6 A1 2 0 0 1 5 10' fill='none' stroke='%231f1b15' stroke-width='0.9' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+}
+/* The sheet between the rolls — the SAME paper as the assistant's message
+   bubbles (crumple texture + aged edge staining). Backgrounds are fixed-height
+   and top-anchored so growing the element REVEALS more paper, never stretches
+   it. Height is driven from JS; the bottom roll rides down as it unfurls. */
+.scroll-sheet {
+  display: block;
+  width: 94%;
+  margin: -3px auto;
+  height: 60px;
   border: 1px solid color-mix(in srgb, var(--ink) 14%, var(--paper));
-  border-radius: 2px;
+  border-top: none;
+  border-bottom: none;
   background-color: var(--paper);
   background-image:
     radial-gradient(125% 120% at 50% 38%, transparent 58%, rgba(120, 92, 48, 0.11) 100%),
     var(--crumple);
+  background-size: 100% 140px, 100% 140px;
+  background-position: top, top;
   background-repeat: no-repeat, no-repeat;
-  background-size: 100% 150px, 100% 150px;   /* fixed to full height → reveals, never stretches */
-  background-position: bottom, bottom;
   background-blend-mode: multiply, multiply;
-  box-shadow: 0 10px 22px -10px rgba(70, 52, 32, 0.34), 0 2px 5px rgba(70, 52, 32, 0.12);
-  animation: paperFill 2.4s steps(6, end) infinite;
+  box-shadow: 0 8px 18px -8px rgba(70, 52, 32, 0.3);
 }
-@media (prefers-color-scheme: dark) { .load-sheet { background-blend-mode: multiply, soft-light; } }
-@keyframes paperFill { from { height: 20%; } to { height: 100%; } }
-@media (prefers-reduced-motion: reduce) {
-  .load-sheet { animation: none; height: 100%; }
+@media (prefers-color-scheme: dark) {
+  .scroll-sheet { background-blend-mode: multiply, soft-light; }
+  .scroll-roll { background-blend-mode: normal, soft-light; }
 }
 
 .msg.user {
@@ -467,6 +521,7 @@ code {
   display: inline-block;
 }
 .lens.safety { color: var(--accent-ink); background: var(--danger); }
+.lens.explore { color: var(--sage); border-color: var(--sage); background: var(--sage-soft); }
 
 /* ── Session bar (chat) — an opaque toolbar flush under the header ────────── */
 .session-bar {
@@ -550,17 +605,50 @@ input[type="range"]:focus { outline: none; }
 input[type="range"]:focus::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--accent-soft); }
 
 /* ── Opener starter chips ────────────────────────────────────────────────── */
-.chips { display: flex; flex-wrap: wrap; gap: 8px; align-self: flex-start; margin-top: 2px; }
+/* Filled, color-coded by kind so they read as real invitations, not outlines:
+   terracotta = conversation threads · sage = experiment/event check-ins ·
+   gold = report-backs · dashed neutral = explore entry. */
+.chips { display: flex; flex-wrap: wrap; gap: 10px; align-self: flex-start; margin-top: 6px; }
 .chip-btn {
   font-family: var(--font-ui);
-  font-size: 0.84rem;
-  border: 1px solid var(--accent);
+  font-size: 0.88rem;
+  font-weight: 500;
+  border: 1.5px solid var(--accent);
   color: var(--accent);
-  background: transparent;
+  background: var(--accent-soft);
   border-radius: var(--radius-pill);
-  padding: 8px 16px;
+  padding: 10px 18px;
+  max-width: min(340px, 100%);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.12s, box-shadow 0.12s;
 }
-.chip-btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.chip-btn:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); transform: translateY(-1px); box-shadow: var(--shadow-md); }
+/* Journey starter chips (event / experiment check-in): sage */
+.chip-btn.starter {
+  border-color: var(--sage);
+  color: var(--sage);
+  background: var(--sage-soft);
+}
+.chip-btn.starter:hover { background: var(--sage); border-color: var(--sage); color: var(--accent-ink); }
+/* Report-back chips: gold */
+.chip-btn.report {
+  border-color: var(--gold);
+  color: var(--gold);
+  background: var(--gold-soft);
+}
+.chip-btn.report:hover { background: var(--gold); border-color: var(--gold); color: var(--accent-ink); }
+/* Explore entry chip: distinct, inviting but quieter */
+.chip-btn.explore {
+  border-style: dashed;
+  border-color: var(--ink-soft);
+  color: var(--ink);
+  background: var(--surface);
+}
+.chip-btn.explore:hover { background: var(--surface-2); border-color: var(--ink); color: var(--ink); transform: translateY(-1px); }
+.chip-btn:disabled { opacity: 0.5; transform: none; box-shadow: var(--shadow-sm); }
 
 /* ── Natural-end nudge ───────────────────────────────────────────────────── */
 .close-nudge {
@@ -674,6 +762,107 @@ input[type="range"]:focus::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--ac
 .bar { flex: 1; height: 10px; background: var(--surface-2); border-radius: var(--radius-pill); overflow: hidden; }
 .bar-fill { display: block; height: 100%; background: var(--accent); border-radius: var(--radius-pill); }
 .bar-n { width: 24px; text-align: right; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+
+/* ── Journey ─────────────────────────────────────────────────────────────── */
+.journey-pills { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 22px; }
+
+.upcoming-strip {
+  background: var(--sage-soft);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  font-family: var(--font-ui);
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+
+.tl-rail {
+  position: relative;
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 24px 26px;
+  box-shadow: var(--shadow-sm);
+}
+.tl-rail::before {
+  content: "";
+  position: absolute; left: 31px; top: 26px; bottom: 26px;
+  width: 2px; background: var(--line);
+}
+.tl-day {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+  margin: 18px 0 8px 26px;
+}
+.tl-day:first-child { margin-top: 0; }
+.tl-entry { position: relative; display: flex; gap: 14px; padding: 5px 0 5px 0; align-items: baseline; }
+.tl-entry[data-tl-open] { cursor: pointer; }
+.tl-entry[data-tl-open]:hover .tl-title { color: var(--accent); }
+.tl-dot {
+  flex: 0 0 auto;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 1px var(--line);
+  position: relative; z-index: 1;
+  transform: translateY(1px);
+}
+.tl-dot.explore { background: var(--sage); }
+.tl-dot.experiment { background: var(--sage); }
+.tl-dot.event { background: var(--gold); }
+.tl-dot.milestone { background: var(--gold); box-shadow: 0 0 0 3px var(--gold-soft); }
+.tl-dot.pattern { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.tl-dot.assignment { background: var(--ink-soft); }
+.tl-dot.goal { background: var(--ink-soft); }
+.tl-title { font-size: 0.95rem; }
+.tl-detail { font-family: var(--font-ui); font-size: 0.82rem; margin-top: 2px; }
+
+/* Patterns (hypotheses) */
+.vote-row { display: flex; gap: 8px; margin-top: 12px; }
+.vote-btn {
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  padding: 6px 14px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-soft);
+}
+.vote-btn.up:hover { background: var(--sage-soft); border-color: var(--sage); color: var(--sage); }
+.vote-btn.down:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.vote-btn:disabled { opacity: 0.5; }
+.hyp-group { margin-bottom: 26px; }
+.hyp-group-title { font-size: 1.1rem; margin: 0 0 2px; }
+.hyp-group-hint { font-family: var(--font-ui); font-size: 0.8rem; margin: 0 0 12px; }
+.hyp-card { padding: 18px 20px; }
+.hyp-statement { margin: 0 0 10px; font-size: 1.02rem; }
+.hyp-retired { opacity: 0.65; }
+.hyp-detail { margin-top: 10px; font-family: var(--font-ui); font-size: 0.85rem; }
+.ev-row { padding: 4px 0; }
+.ev-kind {
+  display: inline-block;
+  font-size: 0.72rem;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--sage-soft); color: var(--sage);
+  margin-right: 6px;
+}
+.ev-row.against .ev-kind { background: var(--accent-soft); color: var(--accent); }
+.ev-row.rev { color: var(--ink-soft); font-style: italic; }
+
+/* Experiments */
+.exp-card { padding: 18px 20px; }
+.exp-swap { margin: 10px 0; line-height: 1.55; }
+
+/* Goals */
+.goal-card { padding: 18px 20px; }
+.goal-notes { margin-top: 10px; font-family: var(--font-ui); font-size: 0.85rem; }
+
+/* Status tags: quiet color coding on top of the base .tag */
+.tag.status-supported, .tag.status-running, .tag.status-progressing, .tag.status-achieved { background: var(--sage-soft); color: var(--sage); }
+.tag.status-testing { background: var(--accent-soft); color: var(--accent); }
+.tag.status-retired, .tag.status-concluded, .tag.status-stalled { opacity: 0.75; }
 
 /* ── Motion / a11y ───────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
