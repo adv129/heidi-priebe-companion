@@ -43,6 +43,7 @@ const { spawn } = require("child_process");
 const core = require("./core");
 const skills = require("./skills");
 const memory = require("./memory");
+const journey = require("./journey");
 const T = require("./templates");
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -125,7 +126,13 @@ async function handleRequest(req, res) {
     const ext = path.extname(filePath).slice(1).toLowerCase();
     try {
       const content = fs.readFileSync(filePath);
-      res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream", "Content-Length": content.length });
+      res.writeHead(200, {
+        "Content-Type": MIME[ext] || "application/octet-stream",
+        "Content-Length": content.length,
+        // Local single-user app: never let the browser hold stale app code —
+        // a plain reload must always pick up the latest js/css.
+        "Cache-Control": "no-store",
+      });
       res.end(content);
     } catch {
       apiError(res, 404, "not found");
@@ -240,6 +247,27 @@ async function handleRequest(req, res) {
     return;
   }
 
+  // ── POST /api/session/mode — switch talk↔explore (fresh explore gets an opener) ─
+  if (req.method === "POST" && pathname === "/api/session/mode") {
+    if (busy) { apiError(res, 409, "busy"); return; }
+    busy = true;
+    try {
+      let body; try { body = JSON.parse(await readBody(req)); } catch { apiError(res, 400, "invalid JSON"); return; }
+      const mode = body.mode === "explore" ? "explore" : "talk";
+      if (mode === "explore") {
+        // A deliberate explore start on an empty session opens with a real
+        // question, persisted into the transcript so the model sees it.
+        const r = await core.startExploreSession();
+        json(res, 200, { ok: true, ...r });
+      } else {
+        core.setSessionMode(mode);
+        json(res, 200, { ok: true, mode });
+      }
+    } catch (e) { if (!res.headersSent) apiError(res, 500, e.message); }
+    finally { busy = false; }
+    return;
+  }
+
   // ── POST /api/session/end — consolidate into memory ───────────────────────────
   if (req.method === "POST" && pathname === "/api/session/end") {
     if (busy) { apiError(res, 409, "busy"); return; }
@@ -255,9 +283,25 @@ async function handleRequest(req, res) {
     return;
   }
 
-  // ── GET /api/memory — profile + session graph ─────────────────────────────────
+  // ── GET /api/memory — profile + session graph + journey stores ────────────────
   if (req.method === "GET" && pathname === "/api/memory") {
-    json(res, 200, memory.memoryView());
+    json(res, 200, { ...memory.memoryView(), ...journey.journeyView() });
+    return;
+  }
+
+  // ── GET /api/timeline — the composed journey timeline ─────────────────────────
+  if (req.method === "GET" && pathname === "/api/timeline") {
+    json(res, 200, { entries: journey.composeTimeline() });
+    return;
+  }
+
+  // ── POST /api/memory/hypothesis/:id/vote — up ("fits") / down ("doesn't fit")
+  const hypMatch = pathname.match(/^\/api\/memory\/hypothesis\/([\w.:-]+)\/vote$/);
+  if (req.method === "POST" && hypMatch) {
+    let body; try { body = JSON.parse(await readBody(req)); } catch { apiError(res, 400, "invalid JSON"); return; }
+    const h = memory.voteHypothesis(hypMatch[1], body.vote);
+    if (!h) { apiError(res, 404, "no such hypothesis or invalid vote"); return; }
+    json(res, 200, { ok: true, hypothesis: h });
     return;
   }
 
@@ -279,6 +323,7 @@ async function handleRequest(req, res) {
   // ── DELETE /api/memory — wipe everything (privacy) ────────────────────────────
   if (req.method === "DELETE" && pathname === "/api/memory") {
     core.clearCurrent();
+    journey.wipe();
     json(res, 200, memory.deleteAll());
     return;
   }

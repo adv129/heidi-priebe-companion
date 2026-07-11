@@ -5,6 +5,7 @@
 "use strict";
 
 const { SYSTEM_PREAMBLE } = require("./system");
+const { EXPLORE_PREAMBLE, buildExploreOpenerPrompt } = require("./explore");
 const { buildRoutePrompt } = require("./route");
 const { buildRespondPrompt } = require("./respond");
 const { buildConsolidatePrompt } = require("./consolidate");
@@ -13,6 +14,8 @@ const onboard = require("./onboard");
 
 module.exports = {
   SYSTEM_PREAMBLE,
+  EXPLORE_PREAMBLE,
+  buildExploreOpenerPrompt,
   buildRoutePrompt,
   buildRespondPrompt,
   buildConsolidatePrompt,

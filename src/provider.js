@@ -84,6 +84,8 @@ async function openrouter(prompt, opts = {}) {
 const ANTHROPIC_KINDS = {
   route:              { model: "claude-opus-4-8", maxTokens: 1024 },
   respond:            { model: "claude-sonnet-5", maxTokens: 2048 },
+  "explore-respond":  { model: "claude-sonnet-5", maxTokens: 2048 },
+  "explore-opener":   { model: "claude-opus-4-8", maxTokens: 1024 },
   consolidate:        { model: "claude-opus-4-8", maxTokens: 8192 },
   "onboard-extract":  { model: "claude-opus-4-8", maxTokens: 4096 },
   "onboard-followup": { model: "claude-sonnet-5", maxTokens: 1024 },
