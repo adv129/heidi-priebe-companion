@@ -9,6 +9,9 @@ memory/profile.json
 memory/graph.json
 memory/current.json
 memory/sessions/
+memory/experiments.json
+memory/timeline.json
+memory.bak/
 
 # Dev state snapshots (backup/restore tool)
 _snapshots/
