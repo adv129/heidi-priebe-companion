@@ -58,7 +58,7 @@ function mdLite(md) {
 
 const routes = {
   "/chat": renderChat,
-  "/memory": renderMemory,
+  "/journey": renderJourney,
   "/settings": renderSettings,
   "/onboard": renderOnboard,
   "/therapist": renderTherapist,
@@ -84,16 +84,19 @@ function buildChrome() {
   const cur = location.hash.replace("#", "") || "/chat";
   const links = mode === "therapist"
     ? [["/therapist", "Dashboard"], ["/settings", "Settings"]]
-    : [["/chat", "Talk"], ["/memory", "Memory"], ["/settings", "Settings"]];
-  nav.innerHTML = links.map(([h, t]) => `<a href="#${h}" class="${cur === h ? "active" : ""}">${t}</a>`).join("");
+    : [["/chat", "Talk"], ["/journey", "Journey"], ["/settings", "Settings"]];
+  nav.innerHTML = links.map(([h, t]) => `<a href="#${h}" class="${cur === h || cur.startsWith(h + "/") ? "active" : ""}">${t}</a>`).join("");
 }
 
 async function handleRoute() {
   if (!appConfig) { try { appConfig = await api("GET", "/api/config"); } catch { appConfig = {}; } }
   let path = location.hash.replace("#", "") || "/chat";
+  if (path === "/memory" || path.startsWith("/memory/")) { location.hash = "#/journey"; return; }
   if (!appConfig.setupComplete && path !== "/onboard") { location.hash = "#/onboard"; return; }
   if (appConfig.setupComplete && path === "/onboard") { location.hash = "#/chat"; return; }
   buildChrome();
+  if (path.startsWith("/journey")) { await renderJourney(path.split("/")[2] || ""); return; }
+  if (path.startsWith("/therapist")) { await renderTherapist(path.split("/")[2] || ""); return; }
   await (routes[path] || renderChat)();
 }
 
@@ -449,21 +452,77 @@ async function renderChat() {
   };
   window.addEventListener("scroll", chatScrollHandler, { passive: true });
 
+  let exploring = false;
+  const setModeLens = (skill, isSafety) => {
+    const label = skill || (exploring ? "getting to know you" : "listening");
+    setLens(exploring && !isSafety ? `exploring · ${label}` : label, isSafety, exploring);
+  };
+
   let sess = { messages: [] };
   try { sess = await api("GET", "/api/session"); } catch {}
+  exploring = sess.mode === "explore";
 
   if (sess.messages && sess.messages.length) {
     sess.messages.forEach((m) => addBubble(scroll, m.role, m.content, m.trace));
-    if (sess.activeSkill) setLens(sess.activeSkill, false);
+    setModeLens(sess.activeSkill, false);
   } else {
     let opener = { blurb: "Hi. What's on your mind?", options: [] };
     try { opener = await api("GET", "/api/opener"); } catch {}
     addBubble(scroll, "assistant", opener.blurb);
-    if (opener.options && opener.options.length) renderChips(scroll, opener.options, input);
+    const chips = [
+      ...(opener.starters || []).map((s) => ({ label: s.label, message: s.message, cls: "starter" })),
+      ...(opener.reportBacks || []).map((r) => ({ label: r.label, message: r.message, cls: "report" })),
+      ...(opener.options || []),
+    ];
+    if (opener.canExplore) chips.push({ label: "Get to know me better →", cls: "explore", onClick: startExplore });
+    if (chips.length) renderChips(scroll, chips, input);
   }
   scrollDown();
   setFocus(focusOn);
   requestAnimationFrame(applyFocusState);
+
+  // Deep-link prefill (e.g. "Talk about this" on an experiment card in Journey).
+  const prefill = sessionStorage.getItem("composerPrefill");
+  if (prefill) { sessionStorage.removeItem("composerPrefill"); input.value = prefill; autoGrow(input); }
+
+  async function startExplore() {
+    // Immediate feedback: the explore opener is a real model call and can take
+    // a while — switch the lens, drop the chips, and show a typing bubble now.
+    app.querySelector("#chips")?.remove();
+    app.querySelector("#explore-nudge")?.remove();
+    exploring = true;
+    setModeLens(null, false);
+    const typing = addBubble(scroll, "assistant", "");
+    typing.classList.add("loading");
+    typing.appendChild(scrollLoader());
+    markFocused(); scrollDown();
+    try {
+      const r = await api("POST", "/api/session/mode", { mode: "explore" });
+      typing.remove();
+      if (r.opener && r.opener.blurb) {
+        addBubble(scroll, "assistant", r.opener.blurb);
+        if (r.opener.options && r.opener.options.length) renderChips(scroll, r.opener.options, input);
+      }
+      markFocused(); scrollDown();
+    } catch (e) {
+      typing.remove();
+      exploring = false;
+      setModeLens(null, false);
+      addBubble(scroll, "system", "Couldn't switch to an explore session: " + e.message);
+    }
+  }
+
+  function renderExploreNudge() {
+    app.querySelector("#explore-nudge")?.remove();
+    const div = document.createElement("div");
+    div.id = "explore-nudge"; div.className = "close-nudge";
+    div.innerHTML = `<span>There might be something here worth slowing down and digging into together.</span>
+      <button class="primary" id="explore-yes">Let's explore</button>
+      <button id="explore-no">Keep talking</button>`;
+    scroll.appendChild(div); scrollDown();
+    div.querySelector("#explore-yes").addEventListener("click", () => { div.remove(); startExplore(); });
+    div.querySelector("#explore-no").addEventListener("click", () => div.remove());
+  }
 
   const send = async (text) => {
     const msg = (text != null ? text : input.value).trim();
@@ -472,7 +531,7 @@ async function renderChat() {
     app.querySelector("#chips")?.remove();
     addBubble(scroll, "user", msg);
     const typing = addBubble(scroll, "assistant", ""); typing.classList.add("loading");
-    typing.innerHTML = '<span class="load-sheet"></span>';
+    typing.appendChild(scrollLoader());
     markFocused(); scrollDown(); requestAnimationFrame(applyFocusState);
     app.querySelector("#send-btn").disabled = true;
     try {
@@ -480,7 +539,10 @@ async function renderChat() {
       typing.classList.remove("loading");
       typing.remove();
       const bubble = addBubble(scroll, "assistant", r.reply, r.trace);
-      setLens(r.safety ? "your wellbeing comes first" : (r.activeSkill || "listening"), r.safety);
+      exploring = r.mode === "explore";
+      if (r.safety) setLens("your wellbeing comes first", true);
+      else setModeLens(r.activeSkill, false);
+      if (r.suggestExplore) renderExploreNudge();
       if (r.close) renderCloseNudge(scroll);
     } catch (e) {
       typing.classList.remove("loading");
@@ -506,8 +568,10 @@ async function renderChat() {
       const r = await api("POST", "/api/session/end", {});
       note.textContent = r.ended ? `Saved: "${r.node.title}". You'll find it under Memory.` : "Nothing to save yet.";
     } catch (e) { note.textContent = "Couldn't save: " + e.message; }
+    exploring = false;
     setLens("listening", false);
     app.querySelector("#close-nudge")?.remove();
+    app.querySelector("#explore-nudge")?.remove();
   }
 
   function renderCloseNudge(scroll) {
@@ -603,6 +667,52 @@ function setupTonePopover() {
   document.addEventListener("click", tonePopDocHandler);
 }
 
+/**
+ * Loading indicator: a hanging paper scroll that gently unfurls and re-rolls
+ * while the reply is being written. It's also a fidget — grab it and pull down
+ * to unfurl it yourself; let go and it drifts back to its rhythm.
+ */
+function scrollLoader() {
+  const el = document.createElement("div");
+  el.className = "scroll-loader";
+  el.innerHTML = `<span class="scroll-roll"></span><span class="scroll-sheet"></span><span class="scroll-roll"></span>`;
+  const sheet = el.querySelector(".scroll-sheet");
+
+  let t = Math.random() * Math.PI * 2; // desync multiple loaders
+  let offset = 0, dragging = false, startY = 0, grabbed = 0;
+
+  el.addEventListener("pointerdown", (e) => {
+    dragging = true; startY = e.clientY; grabbed = offset;
+    el.setPointerCapture(e.pointerId);
+    el.classList.add("held");
+    e.preventDefault();
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (dragging) offset = Math.max(-70, Math.min(95, grabbed + (e.clientY - startY)));
+  });
+  const drop = () => { dragging = false; el.classList.remove("held"); };
+  el.addEventListener("pointerup", drop);
+  el.addEventListener("pointercancel", drop);
+
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // Start on the NEXT frame — the loader is created before it's appended, so a
+  // synchronous first tick would see isConnected === false and never animate.
+  let live = false, orphanFrames = 0;
+  function tick() {
+    if (el.isConnected) live = true;
+    else if (live || ++orphanFrames > 300) return; // removed (or never appended) — stop
+    if (!dragging) {
+      t += 0.016;
+      if (Math.abs(offset) > 0.5) offset *= 0.92; // eases back after a pull
+    }
+    const wave = reduced ? 0 : Math.sin((t * Math.PI * 2) / 3.6) * 26;
+    sheet.style.height = Math.max(20, Math.min(134, 60 + wave + offset)) + "px";
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+  return el;
+}
+
 function addBubble(scroll, role, text, trace) {
   const div = document.createElement("div");
   div.className = "msg " + role;
@@ -636,64 +746,305 @@ function traceHtml(t) {
   return rows.join("");
 }
 
+// Chips accept plain strings (sent verbatim) or { label, message?, cls?, onClick? }.
 function renderChips(scroll, options, input) {
   const div = document.createElement("div"); div.id = "chips"; div.className = "chips";
   options.forEach((o) => {
-    const b = document.createElement("button"); b.className = "chip-btn"; b.textContent = o;
-    b.addEventListener("click", () => { input.value = o; input.dispatchEvent(new Event("input")); app.querySelector("#send-btn").click(); });
+    const chip = typeof o === "string" ? { label: o } : o;
+    const b = document.createElement("button");
+    b.className = "chip-btn" + (chip.cls ? " " + chip.cls : "");
+    b.textContent = chip.label;
+    b.title = chip.label;
+    b.addEventListener("click", () => {
+      if (chip.onClick) { chip.onClick(); return; }
+      input.value = chip.message || chip.label;
+      input.dispatchEvent(new Event("input"));
+      app.querySelector("#send-btn").click();
+    });
     div.appendChild(b);
   });
   scroll.appendChild(div);
 }
 
-function setLens(text, isSafety) {
+function setLens(text, isSafety, isExplore) {
   const l = app.querySelector("#lens"); if (!l) return;
-  l.textContent = text; l.className = "lens" + (isSafety ? " safety" : "");
+  l.textContent = text; l.className = "lens" + (isSafety ? " safety" : "") + (isExplore && !isSafety ? " explore" : "");
 }
 function scrollDown() { requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight)); }
 function autoGrow(t) { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 180) + "px"; }
 
-// ─── Memory ──────────────────────────────────────────────────────────────────
+// ─── Journey ──────────────────────────────────────────────────────────────────
 
-async function renderMemory() {
-  app.innerHTML = `<h1>Memory</h1><p class="sub">What I remember about you, and the threads between our conversations.</p><div id="mem"></div>`;
-  const mem = app.querySelector("#mem");
-  let data;
-  try { data = await api("GET", "/api/memory"); } catch (e) { mem.innerHTML = `<p class="muted">Couldn't load: ${esc(e.message)}</p>`; return; }
+const JOURNEY_SECTIONS = [
+  ["timeline", "Timeline"],
+  ["patterns", "Patterns"],
+  ["experiments", "Experiments"],
+  ["goals", "Goals"],
+  ["you", "About you"],
+  ["sessions", "Sessions"],
+];
 
-  const p = data.profile || {};
-  const visited = Object.entries(p.skillsVisited || {}).sort((a, b) => b[1] - a[1]);
+// Client-side relative time for display ("3 days ago"); handles stamp ids,
+// plain dates, and ISO. Purely cosmetic — the agent's time sense is server-side.
+function relTime(s) {
+  const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})-(\d{2})-(\d{2}))?/);
+  if (!m) return "";
+  const then = new Date(+m[1], +m[2] - 1, +m[3]);
+  const now = new Date();
+  const d = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - then) / 86400000);
+  if (d === 0) return "today";
+  if (d === 1) return "yesterday";
+  if (d === -1) return "tomorrow";
+  if (d > 1 && d < 14) return `${d} days ago`;
+  if (d >= 14 && d < 60) return `about ${Math.round(d / 7)} weeks ago`;
+  if (d >= 60) return `about ${Math.round(d / 30)} months ago`;
+  return `in ${-d} days`;
+}
+
+const HYP_STATUS_WORDS = { forming: "just forming", testing: "testing together", supported: "confirmed with you", revised: "recently reworded", retired: "set aside" };
+const GOAL_STATUS_WORDS = { active: "active", progressing: "progressing", stalled: "resting", achieved: "achieved" };
+
+async function renderJourney(section) {
+  const sec = JOURNEY_SECTIONS.some(([k]) => k === section) ? section : "timeline";
+  app.innerHTML = `<h1>Journey</h1>
+    <p class="sub">What we're learning together, and how it's moving over time.</p>
+    <div class="journey-pills" id="jpills"></div>
+    <div id="jbody"></div>`;
+  const body = app.querySelector("#jbody");
+  let data, timeline;
+  try {
+    [data, timeline] = await Promise.all([api("GET", "/api/memory"), api("GET", "/api/timeline")]);
+  } catch (e) { body.innerHTML = `<p class="muted">Couldn't load: ${esc(e.message)}</p>`; return; }
+
+  const renderers = {
+    timeline: () => renderJourneyTimeline(body, timeline.entries || []),
+    patterns: () => renderPatterns(body, (data.profile || {}).hypotheses || [], () => renderJourney("patterns")),
+    experiments: () => renderExperiments(body, data.experiments || []),
+    goals: () => renderGoals(body, (data.profile || {}).goals || []),
+    you: () => renderProfileYou(body, data.profile || {}),
+    sessions: () => renderSessionsList(body, data.sessions || []),
+  };
+
+  let current = sec;
+  const pills = app.querySelector("#jpills");
+  const draw = () => {
+    pills.innerHTML = JOURNEY_SECTIONS.map(([k, label]) =>
+      `<span class="mc-chip ${current === k ? "sel" : ""}" data-sec="${k}">${label}</span>`).join("");
+    pills.querySelectorAll("[data-sec]").forEach((el) => el.addEventListener("click", () => {
+      current = el.dataset.sec;
+      history.replaceState(null, "", "#/journey/" + current); // deep-linkable, no refetch
+      draw();
+      renderers[current]();
+    }));
+  };
+  draw();
+  renderers[current]();
+}
+
+function renderJourneyTimeline(body, entries) {
+  const upcoming = entries.filter((e) => e.type === "upcoming");
+  const past = entries.filter((e) => e.type !== "upcoming");
+  if (!past.length && !upcoming.length) {
+    body.innerHTML = `<div class="card"><p class="muted">Your journey builds as we talk — sessions, patterns we name, experiments, and moments from your life will show up here.</p></div>`;
+    return;
+  }
+  const DOT = { session: "session", "explore-session": "explore", "life-event": "event", milestone: "milestone", "experiment-started": "experiment", "experiment-checkin": "experiment", "experiment-concluded": "experiment", "pattern-named": "pattern", "assignment-given": "assignment", "assignment-reported": "assignment", "goal-movement": "goal" };
+  let html = "";
+  if (upcoming.length) {
+    html += `<div class="upcoming-strip">${upcoming.map((e) =>
+      `<div><strong>Coming up:</strong> ${esc(e.title)}${e.at ? ` <span class="muted">· ${esc(e.at)}</span>` : ""}</div>`).join("")}</div>`;
+  }
+  let lastDay = "";
+  html += `<div class="tl-rail">`;
+  for (const e of past) {
+    const day = String(e.at).slice(0, 10);
+    if (day !== lastDay) {
+      lastDay = day;
+      html += `<div class="tl-day">${esc(day)} <span class="muted">· ${esc(relTime(day))}</span></div>`;
+    }
+    const clickable = e.refKind === "session" ? ` data-tl-open="${esc(e.refId)}"` : "";
+    html += `<div class="tl-entry"${clickable}>
+      <span class="tl-dot ${DOT[e.type] || "session"}"></span>
+      <div class="tl-body">
+        <div class="tl-title">${e.type === "milestone" ? "✳ " : ""}${esc(e.title)}</div>
+        ${e.detail ? `<div class="tl-detail muted">${esc(e.detail)}</div>` : ""}
+      </div>
+    </div>`;
+    if (e.refKind === "session") html += `<div class="detail" data-detail="${esc(e.refId)}" style="display:none;margin:0 0 12px 26px"></div>`;
+  }
+  html += `</div>`;
+  body.innerHTML = html;
+  body.querySelectorAll("[data-tl-open]").forEach((n) => n.addEventListener("click", () => openSession(n.dataset.tlOpen)));
+}
+
+function renderPatterns(body, hypotheses, refresh) {
+  const active = hypotheses.filter((h) => h.status !== "retired");
+  const retired = hypotheses.filter((h) => h.status === "retired");
+  if (!hypotheses.length) {
+    body.innerHTML = `<div class="card"><p class="muted">Nothing we're noticing together yet. These build as we talk — always as guesses for you to confirm or reject, never verdicts.</p></div>`;
+    return;
+  }
+  const card = (h, muted) => {
+    const ev = (h.evidence || []).slice().reverse();
+    const revs = (h.revisions || []).slice().reverse();
+    const votes = h.votes || { up: 0, down: 0 };
+    return `<div class="card hyp-card ${muted ? "hyp-retired" : ""}">
+      <p class="hyp-statement">${esc(h.statement)}</p>
+      <div class="pill-list">
+        ${muted ? `<span class="tag status-${esc(h.status)}">${esc(HYP_STATUS_WORDS[h.status] || h.status)}</span>` : ""}
+        <span class="tag">${esc(h.confidence)} confidence</span>
+        ${h.lens ? `<span class="tag">${esc(shortSkill(h.lens))}</span>` : ""}
+      </div>
+      ${ev.length || revs.length ? `
+        <button class="think-toggle" data-hyp-toggle>Show the evidence</button>
+        <div class="hyp-detail" style="display:none">
+          ${ev.map((e) => `<div class="ev-row ${e.kind === "against" ? "against" : "for"}"><span class="ev-kind">${e.kind === "against" ? "doesn't fit" : "fits"}</span> ${esc(e.note)} <span class="muted">· ${esc(relTime(e.at))}</span></div>`).join("") || `<p class="muted">No evidence recorded yet.</p>`}
+          ${revs.map((r) => `<div class="ev-row rev">previously worded: “${esc(r.from)}”${r.why ? ` — reworded because ${esc(r.why)}` : ""}</div>`).join("")}
+        </div>` : ""}
+      ${!muted ? `<div class="vote-row">
+        <button class="vote-btn up" data-hyp-vote="up" data-hyp-id="${esc(h.id)}" title="This fits — count it as evidence">▲ fits${votes.up ? ` · ${votes.up}` : ""}</button>
+        <button class="vote-btn down" data-hyp-vote="down" data-hyp-id="${esc(h.id)}" title="This doesn't fit — a second down-vote sets it aside">▼ doesn't fit${votes.down ? ` · ${votes.down}` : ""}</button>
+      </div>` : (votes.up || votes.down) ? `<div class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.78rem;margin-top:8px">your votes: ▲ ${votes.up} · ▼ ${votes.down}</div>` : ""}
+    </div>`;
+  };
+  let html = `<p class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.86rem">Things we're noticing together — working guesses, held lightly. You're the authority: vote on what fits. Up-votes count as evidence; two down-votes set a pattern aside.</p>`;
+  // Grouped by how established each noticing is, most established first.
+  const GROUPS = [
+    ["supported", "Confirmed with you", "Patterns you've recognized as yours."],
+    ["testing", "Testing together", "Live guesses we're actively watching for."],
+    ["revised", "Recently reworded", "The first wording didn't quite fit — these were refined."],
+    ["forming", "Just forming", "Early impressions — not yet explored with you."],
+  ];
+  const byUpdated = (a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt));
+  for (const [status, title, hint] of GROUPS) {
+    const group = active.filter((h) => h.status === status).sort(byUpdated);
+    if (!group.length) continue;
+    html += `<div class="hyp-group">
+      <h2 class="hyp-group-title">${title} <span class="muted">(${group.length})</span></h2>
+      <p class="muted hyp-group-hint">${hint}</p>
+      ${group.map((h) => card(h, false)).join("")}
+    </div>`;
+  }
+  if (retired.length) {
+    html += `<button class="think-toggle" id="retired-toggle">Set aside (${retired.length})</button>
+      <div id="retired-list" style="display:none">${retired.map((h) => card(h, true)).join("")}</div>`;
+  }
+  body.innerHTML = html;
+  body.querySelectorAll("[data-hyp-toggle]").forEach((btn) => btn.addEventListener("click", () => {
+    const panel = btn.nextElementSibling;
+    const open = panel.style.display !== "none";
+    panel.style.display = open ? "none" : "block";
+    btn.textContent = open ? "Show the evidence" : "Hide the evidence";
+  }));
+  const rt = body.querySelector("#retired-toggle");
+  if (rt) rt.addEventListener("click", () => {
+    const list = body.querySelector("#retired-list");
+    list.style.display = list.style.display === "none" ? "block" : "none";
+  });
+  body.querySelectorAll("[data-hyp-vote]").forEach((btn) => btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    try { await api("POST", `/api/memory/hypothesis/${encodeURIComponent(btn.dataset.hypId)}/vote`, { vote: btn.dataset.hypVote }); refresh(); }
+    catch (e) { btn.disabled = false; alert("Couldn't record that: " + e.message); }
+  }));
+}
+
+function renderExperiments(body, experiments) {
+  if (!experiments.length) {
+    body.innerHTML = `<div class="card"><p class="muted">No experiments yet. Once a pattern is well understood and you want to change it, we'll design small experiments together — new responses to try in place of old patterns.</p></div>`;
+    return;
+  }
+  const activeExps = experiments.filter((e) => e.status !== "concluded");
+  const done = experiments.filter((e) => e.status === "concluded");
+  const card = (e) => {
+    const last = (e.checkIns || []).slice(-1)[0];
+    const meta = [
+      e.startedAt ? `started ${relTime(e.startedAt)}` : `proposed ${relTime(e.proposedAt)}`,
+      (e.checkIns || []).length ? `${e.checkIns.length} check-in${e.checkIns.length === 1 ? "" : "s"}` : "",
+      last ? `last: “${last.note}” (${last.verdict})` : "",
+    ].filter(Boolean).join(" · ");
+    return `<div class="card exp-card">
+      <div class="pill-list">
+        <span class="tag status-${esc(e.status)}">${esc(e.status)}</span>
+        ${e.strategy ? `<span class="tag">${esc(e.strategy)}</span>` : ""}
+        ${e.lens ? `<span class="tag">${esc(shortSkill(e.lens))}</span>` : ""}
+      </div>
+      <p class="exp-swap"><span class="muted">instead of</span> ${esc(e.thePattern)}<br><span class="muted">trying</span> <strong>${esc(e.theReplacement)}</strong></p>
+      <div class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.82rem">${esc(meta)}</div>
+      ${e.outcome ? `<p style="margin-bottom:0"><strong>What we learned:</strong> ${esc(e.outcome.summary)}${e.outcome.keeping === true ? " (keeping it)" : e.outcome.keeping === "adapted" ? " (adapted it)" : " (let it go)"}</p>` : `
+      <div style="margin-top:10px"><button data-exp-talk="${esc(e.theReplacement)}">Talk about this</button></div>`}
+    </div>`;
+  };
+  body.innerHTML = activeExps.map(card).join("")
+    + (done.length ? `<h2 style="font-size:1.05rem">Wrapped up</h2>` + done.map(card).join("") : "");
+  body.querySelectorAll("[data-exp-talk]").forEach((btn) => btn.addEventListener("click", () => {
+    sessionStorage.setItem("composerPrefill", `I want to check in on the experiment we set up — "${btn.dataset.expTalk}".`);
+    location.hash = "#/chat";
+  }));
+}
+
+function renderGoals(body, goals) {
+  const structured = (goals || []).filter((g) => g && typeof g === "object");
+  if (!structured.length) {
+    body.innerHTML = `<div class="card"><p class="muted">No goals on record yet — they surface naturally as we talk about what you want.</p></div>`;
+    return;
+  }
+  const open = structured.filter((g) => g.status !== "achieved");
+  const achieved = structured.filter((g) => g.status === "achieved");
+  const card = (g) => {
+    const recent = (g.progress || []).slice(-3).reverse();
+    return `<div class="card goal-card">
+      <p style="margin:0 0 8px"><strong>${esc(g.text)}</strong></p>
+      <div class="pill-list"><span class="tag status-${esc(g.status)}">${esc(GOAL_STATUS_WORDS[g.status] || g.status)}</span>
+        ${g.progress && g.progress.length ? `<span class="tag">last movement ${esc(relTime(g.progress[g.progress.length - 1].at))}</span>` : ""}</div>
+      ${recent.length ? `<div class="goal-notes">${recent.map((p) => `<div class="ev-row"><span class="ev-kind">${esc(p.movement)}</span> ${esc(p.note || "")} <span class="muted">· ${esc(relTime(p.at))}</span></div>`).join("")}</div>` : ""}
+    </div>`;
+  };
+  body.innerHTML = open.map(card).join("")
+    + (achieved.length ? `<h2 style="font-size:1.05rem">Achieved</h2>` + achieved.map(card).join("") : "");
+}
+
+function renderProfileYou(body, p) {
   const arr = (x) => Array.isArray(x) ? x : [];
-  const bits = [];
-  if (p.lifeContext) bits.push(["Life", p.lifeContext]);
-  if (arr(p.values).length) bits.push(["Values", p.values.join("; ")]);
-  if (arr(p.goals).length) bits.push(["Goals", p.goals.join("; ")]);
-  if (p.relationalContext) bits.push(["Relational context", p.relationalContext]);
-  if (p.emotionalStyle) bits.push(["Emotional style", p.emotionalStyle]);
-  if (p.readiness) bits.push(["Readiness", p.readiness]);
-  if (arr(p.history).length) bits.push(["Turning points", p.history.join("; ")]);
-  if (arr(p.whatHelps).length) bits.push(["What's helped", p.whatHelps.join("; ")]);
-  if (arr(p.presentingConcerns).length) bits.push(["Recurring concerns", p.presentingConcerns.join("; ")]);
-  if (arr(p.suspectedPatterns).length) bits.push(["Working hypotheses", p.suspectedPatterns.join("; ")]);
+  const chips = (items) => `<div class="pill-list">${items.map((v) => `<span class="tag">${esc(v)}</span>`).join("")}</div>`;
+  const still = `<p class="muted" style="font-size:0.86rem;font-family:ui-sans-serif,system-ui,sans-serif">Still learning this — it fills in as we talk.</p>`;
+  const visited = Object.entries(p.skillsVisited || {}).sort((a, b) => b[1] - a[1]);
 
-  let html = `<div class="card">
-    <h2 style="margin-top:0">${esc(p.name || "You")}</h2>
-    ${bits.map(([k, v]) => `<p><strong>${esc(k)}:</strong> ${esc(v)}</p>`).join("") || '<p class="muted">Nothing learned yet — we\'ll build this as we talk.</p>'}
-    ${visited.length ? `<div class="pill-list">${visited.map(([k, n]) => `<span class="tag">${esc(k)} · ${n}</span>`).join("")}</div>` : ""}
-  </div>`;
+  let html = `<div class="card"><h2 style="margin-top:0">${esc(p.name || "You")}</h2>
+    ${p.lifeContext ? `<p>${esc(p.lifeContext)}</p>` : still}</div>`;
+
+  html += `<div class="card"><h2 style="margin-top:0">What matters to you</h2>
+    ${arr(p.values).length ? chips(p.values) : still}</div>`;
 
   if (arr(p.people).length) {
     html += `<div class="card"><h2 style="margin-top:0">People in your life</h2>${p.people.map((x) =>
       `<p><strong>${esc(x.name)}</strong>${x.relationship ? ` — <span class="muted">${esc(x.relationship)}</span>` : ""}${x.notes ? `<br><span style="font-size:0.92rem">${esc(x.notes)}</span>` : ""}</p>`).join("")}</div>`;
+  } else {
+    html += `<div class="card"><h2 style="margin-top:0">People in your life</h2>${still}</div>`;
   }
 
-  const sessions = data.sessions || [];
-  html += `<h2>Sessions <span class="muted">(${sessions.length})</span></h2>`;
-  html += sessions.length
+  html += `<div class="card"><h2 style="margin-top:0">How you work</h2>
+    ${p.emotionalStyle ? `<p><strong>With feelings:</strong> ${esc(p.emotionalStyle)}</p>` : ""}
+    ${p.relationalContext ? `<p><strong>Relational world:</strong> ${esc(p.relationalContext)}</p>` : ""}
+    ${p.readiness ? `<p><strong>What you want right now:</strong> ${esc(p.readiness)}</p>` : ""}
+    ${arr(p.whatHelps).length ? `<p style="margin-bottom:4px"><strong>What has helped:</strong></p>${chips(p.whatHelps)}` : ""}
+    ${!p.emotionalStyle && !p.relationalContext && !p.readiness && !arr(p.whatHelps).length ? still : ""}</div>`;
+
+  html += `<div class="card"><h2 style="margin-top:0">Turning points</h2>
+    ${arr(p.history).length ? p.history.map((h) => `<p style="margin:4px 0">· ${esc(h)}</p>`).join("") : still}</div>`;
+
+  html += `<div class="card"><h2 style="margin-top:0">Themes we keep touching</h2>
+    ${arr(p.presentingConcerns).length ? chips(p.presentingConcerns) : still}
+    ${visited.length ? `<p style="margin:12px 0 4px"><strong>Lenses we've used:</strong></p><div class="pill-list">${visited.map(([k, n]) => `<span class="tag">${esc(shortSkill(k))} · ${n}</span>`).join("")}</div>` : ""}</div>`;
+
+  body.innerHTML = html;
+}
+
+function renderSessionsList(body, sessions) {
+  body.innerHTML = sessions.length
     ? `<div class="card">` + sessions.map((s) => `
         <div class="session-item">
           <div class="row spread">
-            <span class="session-title" data-open="${esc(s.id)}">${esc(s.title)}</span>
+            <span class="session-title" data-open="${esc(s.id)}">${s.mode === "explore" ? `<span class="tag" style="margin-right:6px">explore</span>` : ""}${esc(s.title)}</span>
             <button class="danger" data-del="${esc(s.id)}" style="padding:4px 10px;font-size:0.78rem">Delete</button>
           </div>
           <div class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.8rem">${esc(s.date)} · ${esc(s.summary)}</div>
@@ -704,14 +1055,12 @@ async function renderMemory() {
           <div class="detail" data-detail="${esc(s.id)}" style="display:none;margin-top:10px"></div>
         </div>`).join("") + `</div>`
     : `<p class="muted">No sessions saved yet. End a conversation (in Talk) to save one.</p>`;
-
-  mem.innerHTML = html;
-  mem.querySelectorAll("[data-open]").forEach((n) => n.addEventListener("click", () => openSession(n.dataset.open)));
-  mem.querySelectorAll("[data-del]").forEach((n) => n.addEventListener("click", async (e) => {
+  body.querySelectorAll("[data-open]").forEach((n) => n.addEventListener("click", () => openSession(n.dataset.open)));
+  body.querySelectorAll("[data-del]").forEach((n) => n.addEventListener("click", async (e) => {
     e.stopPropagation();
     if (!confirm("Delete this session from memory?")) return;
     await api("DELETE", "/api/memory/session/" + encodeURIComponent(n.dataset.del));
-    renderMemory();
+    renderJourney("sessions");
   }));
 }
 
@@ -824,9 +1173,18 @@ async function renderSettings() {
 
 // ─── Therapist dashboard (viz + insights, no LLM) ──────────────────────────────
 
-async function renderTherapist() {
+const THERAPIST_SECTIONS = [
+  ["network", "Network"],
+  ["lenses", "Lenses"],
+  ["signals", "Signals"],
+  ["timeline", "Timeline"],
+];
+
+async function renderTherapist(section) {
+  const sec = THERAPIST_SECTIONS.some(([k]) => k === section) ? section : "network";
   app.innerHTML = `<h1>Therapist view</h1>
     <p class="sub">A read-only lens on the referential network and what it reveals. Local, single-user — no clinical claims.</p>
+    <div class="journey-pills" id="thpills"></div>
     <div id="ther"></div>`;
   const box = app.querySelector("#ther");
   let data;
@@ -836,23 +1194,50 @@ async function renderTherapist() {
   const skillsIdx = data.skills || {};
   const profile = data.profile || {};
 
-  if (!sessions.length) { box.innerHTML = `<div class="card"><p class="muted">No sessions yet — the network builds as conversations are saved.</p></div>`; return; }
+  if (!sessions.length) {
+    app.querySelector("#thpills").remove();
+    box.innerHTML = `<div class="card"><p class="muted">No sessions yet — the network builds as conversations are saved.</p></div>`;
+    return;
+  }
 
-  box.innerHTML = `
-    <div class="card"><h2 style="margin-top:0">Referential network</h2>
-      <p class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.82rem">Lenses (large) linked to the sessions that used them; faint lines join related sessions. Click a node to inspect.</p>
-      <div id="graph"></div><div id="node-detail" class="node-detail muted">Click a node to inspect.</div>
-    </div>
-    <div class="card"><h2 style="margin-top:0">Most-used lenses</h2><div id="freq"></div></div>
-    <div class="card"><h2 style="margin-top:0">Lenses that co-occur</h2><div id="cooc"></div></div>
-    <div class="card"><h2 style="margin-top:0">Profile signals</h2><div id="psig"></div></div>
-    <div class="card"><h2 style="margin-top:0">Timeline</h2><div id="tl"></div></div>`;
+  const renderers = {
+    network: () => {
+      box.innerHTML = `<div class="card"><h2 style="margin-top:0">Referential network</h2>
+        <p class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.82rem">Lenses (large) linked to the sessions that used them; faint lines join related sessions. Click a node to inspect.</p>
+        <div id="graph"></div><div id="node-detail" class="node-detail muted">Click a node to inspect.</div>
+      </div>`;
+      drawGraph(sessions, skillsIdx);
+    },
+    lenses: () => {
+      box.innerHTML = `<div class="card"><h2 style="margin-top:0">Most-used lenses</h2><div id="freq"></div></div>
+        <div class="card"><h2 style="margin-top:0">Lenses that co-occur</h2><div id="cooc"></div></div>`;
+      drawFreq(skillsIdx, sessions);
+      drawCooc(sessions);
+    },
+    signals: () => {
+      box.innerHTML = `<div class="card"><h2 style="margin-top:0">Profile signals</h2><div id="psig"></div></div>`;
+      drawProfileSignals(profile);
+    },
+    timeline: () => {
+      box.innerHTML = `<div class="card"><h2 style="margin-top:0">Timeline</h2><div id="tl"></div></div>`;
+      drawTimeline(sessions);
+    },
+  };
 
-  drawGraph(sessions, skillsIdx);
-  drawFreq(skillsIdx, sessions);
-  drawCooc(sessions);
-  drawProfileSignals(profile);
-  drawTimeline(sessions);
+  let current = sec;
+  const pills = app.querySelector("#thpills");
+  const draw = () => {
+    pills.innerHTML = THERAPIST_SECTIONS.map(([k, label]) =>
+      `<span class="mc-chip ${current === k ? "sel" : ""}" data-sec="${k}">${label}</span>`).join("");
+    pills.querySelectorAll("[data-sec]").forEach((el) => el.addEventListener("click", () => {
+      current = el.dataset.sec;
+      history.replaceState(null, "", "#/therapist/" + current);
+      draw();
+      renderers[current]();
+    }));
+  };
+  draw();
+  renderers[current]();
 }
 
 function drawGraph(sessions, skillsIdx) {
@@ -945,21 +1330,26 @@ function drawCooc(sessions) {
 
 function drawProfileSignals(p) {
   const arr = (x) => Array.isArray(x) ? x : [];
+  const goalText = (g) => (g && typeof g === "object") ? `${g.text}${g.status && g.status !== "active" ? ` [${g.status}]` : ""}` : g;
   const bits = [];
   if (p.lifeContext) bits.push(["Life context", p.lifeContext]);
   if (arr(p.values).length) bits.push(["Values", p.values.join("; ")]);
-  if (arr(p.goals).length) bits.push(["Goals", p.goals.join("; ")]);
+  if (arr(p.goals).length) bits.push(["Goals", p.goals.map(goalText).join("; ")]);
   if (p.relationalContext) bits.push(["Relational context", p.relationalContext]);
   if (p.emotionalStyle) bits.push(["Emotional style", p.emotionalStyle]);
   if (p.readiness) bits.push(["Readiness", p.readiness]);
   if (arr(p.history).length) bits.push(["Turning points", p.history.join("; ")]);
   if (arr(p.whatHelps).length) bits.push(["What's helped", p.whatHelps.join("; ")]);
   if (arr(p.presentingConcerns).length) bits.push(["Recurring concerns", p.presentingConcerns.join("; ")]);
-  if (arr(p.suspectedPatterns).length) bits.push(["Working hypotheses", p.suspectedPatterns.join("; ")]);
   if (arr(p.redFlags).length) bits.push(["Flags", p.redFlags.join("; ")]);
   if (arr(p.people).length) bits.push(["People on record", p.people.map((x) => x.name + (x.relationship ? ` (${x.relationship})` : "")).join(", ")]);
-  document.getElementById("psig").innerHTML = bits.length
-    ? bits.map(([k, v]) => `<p><strong>${esc(k)}:</strong> ${esc(v)}</p>`).join("")
+  const hyps = arr(p.hypotheses);
+  const hypTable = hyps.length
+    ? `<p style="margin-bottom:4px"><strong>Working hypotheses:</strong></p>` + hyps.map((h) =>
+        `<div class="row spread" style="padding:2px 0;font-size:0.88rem"><span>${esc(h.statement)}</span><span class="tag">${esc(h.status)} · ${esc(h.confidence)} · ${(h.evidence || []).length} ev.</span></div>`).join("")
+    : "";
+  document.getElementById("psig").innerHTML = (bits.length || hyps.length)
+    ? bits.map(([k, v]) => `<p><strong>${esc(k)}:</strong> ${esc(v)}</p>`).join("") + hypTable
     : `<p class="muted">Signals accumulate as sessions are saved.</p>`;
 }
 

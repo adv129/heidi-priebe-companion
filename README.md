@@ -26,6 +26,12 @@ Requirements: **Node ≥ 18** and one provider. The default (`claude-p`) needs n
 existing Claude Code login. To use OpenRouter instead, `cp .env.example .env`, add
 `OPENROUTER_API_KEY`, and pick "OpenRouter" in Settings.
 
+To use the Anthropic API directly (per-token billing, but far cheaper per call than `claude-p` —
+it drops the Claude Code agent scaffolding and picks a model per call kind), set
+`"provider": "anthropic"` in `config.json` and add `ANTHROPIC_API_KEY` to `.env`. Models are
+configurable per call kind under `config.anthropic.models` (defaults: Opus 4.8 for
+routing/consolidation/extraction where analysis matters, Sonnet 5 for conversation).
+
 First launch drops you into a short onboarding (provider → consent → name → what brings you →
 review), then into **Talk**.
 
@@ -38,17 +44,30 @@ review), then into **Talk**.
   activates, the companion sees prior sessions that used the same lens — each tagged with the *other*
   skills that session touched, so linked threads (e.g. a past relationship chat that also touched
   shame) surface and can be followed on demand.
+- **An understanding loop.** Besides regular Talk sessions there are **Explore sessions** —
+  deliberate get-to-know-you conversations (start one from the chip on the Talk home, or accept the
+  companion's mid-chat offer). What it learns becomes **transparent working hypotheses** ("things
+  we're noticing together") with visible evidence for *and against*, revision history, and a
+  "that's not me" veto — plus small **noticing assignments** you can report back on next session.
+- **A time sense.** Every prompt carries server-computed time context (days since last session,
+  dated life events you mentioned, aging assignments), so the companion can ask how the interview
+  went — once, lightly — and the **Journey** tab shows the whole arc on a timeline.
+- **An experiments loop.** Once a pattern is confirmed *with you* and you want change, you co-design
+  small experiments (a new response in place of the old pattern) with honest check-ins — tracked on
+  the Journey tab, framed as curiosity, never pass/fail.
 - **Safety first.** A crisis pre-check plus always-on safety instructions suspend framework work and
   surface real-world resources when needed.
 
 ## Layout
 
 ```
-src/       server.js · core.js (turn pipeline) · provider.js · skills.js · memory.js · safety.js · templates/
-public/    index.html · app.js · style.css   (the SPA)
+src/       server.js · core.js (turn pipeline) · provider.js · skills.js · memory.js
+           journey.js (experiments + timeline stores) · timeaware.js (time context) · safety.js · templates/
+public/    index.html · app.js · style.css   (the SPA: Talk · Journey · Settings)
 skills/    the knowledge base (one folder per skill: SKILL.md + references/)
 skills.json  machine-readable manifest (regenerate: npm run manifest)
-memory/    profile.json · graph.json · sessions/   (local, gitignored, sensitive)
+memory/    profile.json (incl. hypotheses + assignments) · graph.json · sessions/
+           experiments.json · timeline.json   (local, gitignored, sensitive)
 ```
 
 ## Privacy

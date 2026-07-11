@@ -15,6 +15,8 @@ const path = require("path");
 const provider = require("./provider");
 const skills = require("./skills");
 const memory = require("./memory");
+const journey = require("./journey");
+const timeaware = require("./timeaware");
 const safety = require("./safety");
 const tracer = require("./trace");
 const T = require("./templates");
@@ -38,14 +40,15 @@ function saveConfig(cfg) {
 
 // ─── Current session (persisted so a restart doesn't lose it) ────────────────
 
-function newSession() {
-  return { id: memory.stamp().id, startedAt: memory.stamp().id, messages: [], skillsUsed: [], activeSkill: null };
+function newSession(mode = "talk") {
+  return { id: memory.stamp().id, startedAt: memory.stamp().id, mode, messages: [], skillsUsed: [], activeSkill: null };
 }
 function loadCurrent() {
   try {
     const s = JSON.parse(fs.readFileSync(CURRENT_PATH, "utf8"));
     s.messages = s.messages || [];
     s.skillsUsed = s.skillsUsed || [];
+    s.mode = s.mode === "explore" ? "explore" : "talk";
     return s;
   } catch { return null; }
 }
@@ -56,6 +59,35 @@ function saveCurrent(s) {
 }
 function clearCurrent() { try { fs.unlinkSync(CURRENT_PATH); } catch {} }
 function ensureSession() { return loadCurrent() || saveCurrent(newSession()); }
+
+/**
+ * Switch the current session's mode (deliberate explore start, or accepting a
+ * mid-chat proposal — the conversion keeps context, no session restart). Marks
+ * exploreSuggested so the router never re-proposes in the same session.
+ */
+function setSessionMode(mode) {
+  const m = mode === "explore" ? "explore" : "talk";
+  const session = loadCurrent() || newSession(m);
+  session.mode = m;
+  if (m === "explore") session.exploreSuggested = true;
+  saveCurrent(session);
+  return session;
+}
+
+/** The shared TIME CONTEXT block (server-computed; injectable now for tests). */
+function buildTimeBlock(mode, now = new Date()) {
+  try {
+    return timeaware.timeContext({
+      now,
+      sessions: memory.listSessions(),
+      events: journey.loadTimeline().events,
+      experiments: journey.loadExperiments().experiments,
+      assignments: memory.getAssignments(),
+      goals: memory.loadProfile().goals,
+      mode,
+    });
+  } catch (e) { console.error(`[timeaware] ${e.message}`); return ""; }
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -98,14 +130,24 @@ function agentCoreRoutingTable() {
 async function timedComplete(label, prompt, opts, extra) {
   const start = Date.now();
   let output = "", error = null;
+  const usage = {}; // adapters may fill { model, tokens, costUsd } via this sink
   try {
-    output = await provider.complete(prompt, opts);
+    output = await provider.complete(prompt, { ...opts, kind: label, usageSink: usage });
     return output;
   } catch (e) {
     error = e.message;
     throw e;
   } finally {
-    tracer.log({ label, model: (opts && opts.provider) || "claude-p", ms: Date.now() - start, ...(extra || {}), prompt, output, error });
+    tracer.log({
+      label,
+      model: usage.model || (opts && opts.provider) || "claude-p",
+      ms: Date.now() - start,
+      ...(usage.tokens ? { usage: usage.tokens, costUsd: usage.costUsd } : {}),
+      ...(extra || {}),
+      prompt,
+      output,
+      error,
+    });
   }
 }
 
@@ -130,6 +172,23 @@ function stripPlanning(text) {
   return kept || text; // if that would strip everything, keep the original
 }
 
+/**
+ * Backup for the plain-text rule: the UI renders replies as literal text, so
+ * any markdown the model emits anyway is unwrapped here (bold/italic markers,
+ * headings, bullets, code ticks) rather than shown as symbols.
+ */
+function stripMarkdown(text) {
+  return String(text)
+    .replace(/^```[^\n]*$/gm, "")
+    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    .replace(/__([^_\n]+)__/g, "$1")
+    .replace(/(^|\s)\*([^*\n]+)\*(?=[\s.,!?;:)]|$)/g, "$1$2")
+    .replace(/(^|\s)_([^_\n]+)_(?=[\s.,!?;:)]|$)/g, "$1$2")
+    .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*•]\s+/gm, "");
+}
+
 /** Trim accidental meta leakage from a reply. The prompt already forbids it; this is backup. */
 function sanitizeReply(text) {
   if (!text) return "";
@@ -141,7 +200,7 @@ function sanitizeReply(text) {
     if (/^\((?:note|thinking|analysis)[^)]*\)$/i.test(l)) { lines.shift(); continue; }
     break;
   }
-  let out = lines.join("\n")
+  let out = stripMarkdown(lines.join("\n"))
     .replace(/\[\[\s*(?:recall|consult)\s*:[^\]]*\]\]/gi, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -172,13 +231,16 @@ async function route(cfg, session, userMessage) {
     transcriptTail: renderTranscript(tailMsgs, ROUTE_TAIL_MSGS),
     currentSkill: session.activeSkill,
     sessionHistory,
+    mode: session.mode,
+    suggestedExploreAlready: !!session.exploreSuggested,
+    timeLine: buildTimeBlock("route"),
   });
   try {
     const raw = await timedComplete("route", prompt, { provider: cfg.provider, config: cfg });
     const parsed = parseJsonLoose(raw);
     if (parsed) return parsed;
   } catch (e) { console.error(`[route] ${e.message}`); }
-  return { skill: "stay", reference: null, recall: null, consult: null, close: false, reason: "router-fallback" };
+  return { skill: "stay", reference: null, recall: null, consult: null, close: false, suggestExplore: false, reason: "router-fallback" };
 }
 
 function resolveActiveSkill(routed, session) {
@@ -214,8 +276,9 @@ function buildRecallBlock(routed, activeName) {
 function assemble(session, userMessage, active, opts = {}) {
   const skillBody = active.name ? skills.readSkillBody(active.name) : null;
   const referenceBody = active.reference ? skills.readReference(active.name, active.reference) : null;
+  const exploring = session.mode === "explore";
   return T.buildRespondPrompt({
-    system: T.SYSTEM_PREAMBLE,
+    system: exploring ? T.EXPLORE_PREAMBLE : T.SYSTEM_PREAMBLE,
     safetyDirective: opts.safetyDirective || null,
     toneDirective: opts.toneDirective || null,
     agentCore: skills.readAgentCore(),
@@ -224,6 +287,10 @@ function assemble(session, userMessage, active, opts = {}) {
     referenceName: active.reference,
     referenceBody,
     profileBlock: memory.profileContext(),
+    timeBlock: buildTimeBlock("respond"),
+    understandingBlock: memory.hypothesesContext({ mode: exploring ? "explore" : "talk" }),
+    assignmentsBlock: memory.assignmentsContext(),
+    experimentsBlock: journey.experimentsContext(),
     skillHistoryBlock: active.name ? memory.skillHistoryContext(active.name, { excludeId: session.id }) : "",
     transcript: renderTranscript(session.messages),
     userMessage,
@@ -239,6 +306,7 @@ async function handleTurn(userMessage) {
   let active = { name: null, reference: null };
   let recall = { block: null, recalledSessionId: null, consulted: null };
   let close = false;
+  let suggestExplore = false;
   let routerReason = null;
 
   if (!crisis.flagged) {
@@ -247,14 +315,18 @@ async function handleTurn(userMessage) {
     recall = buildRecallBlock(routed, active.name);
     close = routed.close === true;
     routerReason = routed.reason || null;
+    if (routed.suggestExplore === true && session.mode !== "explore" && !session.exploreSuggested) {
+      suggestExplore = true;
+      session.exploreSuggested = true;
+    }
   }
 
   const opts = { recallBlock: recall.block, toneDirective: T.buildToneDirective(cfg.user || {}) };
   if (crisis.flagged) opts.safetyDirective = safety.SAFETY_DIRECTIVE;
 
   const respondPrompt = assemble(session, userMessage, active, opts);
-  const raw = await timedComplete("respond", respondPrompt, { provider: cfg.provider, config: cfg }, {
-    activeLens: active.name, reference: active.reference, recall: recall.recalledSessionId, consult: recall.consulted, crisis: crisis.flagged,
+  const raw = await timedComplete(session.mode === "explore" ? "explore-respond" : "respond", respondPrompt, { provider: cfg.provider, config: cfg }, {
+    activeLens: active.name, reference: active.reference, recall: recall.recalledSessionId, consult: recall.consulted, crisis: crisis.flagged, mode: session.mode,
   });
   let reply = sanitizeReply(raw) || "I'm here. Tell me a little more about what's on your mind.";
   let leaked = false;
@@ -270,6 +342,8 @@ async function handleTurn(userMessage) {
     recalledSessionId: recall.recalledSessionId,
     consulted: recall.consulted,
     close,
+    suggestExplore,
+    mode: session.mode,
     safety: crisis.flagged,
   };
   tracer.log({ label: "turn", sessionId: session.id, userMessage, rawReply: raw, reply, leaked, ...trace });
@@ -282,22 +356,53 @@ async function handleTurn(userMessage) {
   }
   saveCurrent(session);
 
-  return { reply, activeSkill: active.name, reference: active.reference, safety: crisis.flagged, close, trace };
+  return { reply, activeSkill: active.name, reference: active.reference, safety: crisis.flagged, close, suggestExplore, mode: session.mode, trace };
 }
 
 // ─── Session end / consolidate ───────────────────────────────────────────────
+
+/** Compact "open items on record" block (by id) for the consolidate prompt. */
+function buildOpenItemsBlock(now = new Date()) {
+  const lines = [];
+  try {
+    const tl = journey.loadTimeline();
+    for (const e of tl.events.filter((x) => x.status === "upcoming").slice(0, 4)) {
+      const d = timeaware.dayDiff(e.date, now);
+      lines.push(`- (${e.id}) event "${e.text}" — ${e.date}, ${d > 0 ? `passed ${timeaware.relPhrase(e.date, now)}` : timeaware.relPhrase(e.date, now)}`);
+    }
+    for (const x of journey.loadExperiments().experiments.filter((e) => e.status === "running" || e.status === "proposed").slice(0, 3)) {
+      const day = x.startedAt ? (timeaware.dayDiff(x.startedAt, now) || 0) + 1 : null;
+      lines.push(`- (${x.id}) experiment "${x.theReplacement}" instead of "${x.thePattern}" — ${x.status}${day ? `, day ${day}` : ""}${x.checkIns.length ? `, last check-in ${timeaware.relPhrase(x.checkIns[x.checkIns.length - 1].at, now)}` : ""}`);
+    }
+    for (const g of memory.loadProfile().goals.filter((g) => g.status !== "achieved").slice(0, 5)) {
+      lines.push(`- (${g.id}) goal "${g.text}" — ${g.status}`);
+    }
+  } catch (e) { console.error(`[open-items] ${e.message}`); }
+  return lines.join("\n");
+}
 
 async function endSession() {
   const session = loadCurrent();
   if (!session || !session.messages.length) { clearCurrent(); return { ended: false, reason: "empty" }; }
   const cfg = loadConfig() || {};
   const transcript = renderTranscript(session.messages, 1000);
+  const now = new Date();
 
   let parsed = null;
   try {
     const raw = await timedComplete(
       "consolidate",
-      T.buildConsolidatePrompt({ transcript, skillsUsed: session.skillsUsed, profileBlock: memory.profileContext() }),
+      T.buildConsolidatePrompt({
+        transcript,
+        skillsUsed: session.skillsUsed,
+        profileBlock: memory.profileContext(),
+        mode: session.mode,
+        hypothesesBlock: memory.hypothesesContext({ mode: "consolidate" }),
+        assignmentsBlock: memory.assignmentsContext(now),
+        openItemsBlock: buildOpenItemsBlock(now),
+        todayLine: timeaware.longNow(now),
+        calendarBlock: timeaware.calendarTable(now),
+      }),
       { provider: cfg.provider, config: cfg }
     );
     parsed = parseJsonLoose(raw);
@@ -308,8 +413,19 @@ async function endSession() {
     parsed = { title: "Session", summary: firstUser ? firstUser.content.slice(0, 160) : "(conversation)", presentingConcern: "", insights: [], profileUpdates: {} };
   }
 
-  const node = memory.appendSession({ ...parsed, skills: session.skillsUsed });
-  if (parsed.nextOpener) memory.setNextOpener(parsed.nextOpener);
+  const node = memory.appendSession({ ...parsed, skills: session.skillsUsed, mode: session.mode });
+  // Fold the understanding + journey loops. Each is defensive — malformed
+  // fields are skipped item-by-item and never block the session save.
+  try { if (parsed.hypothesisUpdates) memory.applyHypothesisUpdates(parsed.hypothesisUpdates, node.id); } catch (e) { console.error(`[hypotheses] ${e.message}`); }
+  try { if (parsed.assignmentUpdates) memory.applyAssignmentUpdates(parsed.assignmentUpdates, node.id); } catch (e) { console.error(`[assignments] ${e.message}`); }
+  try { if (parsed.goalProgress) memory.applyGoalProgress(parsed.goalProgress); } catch (e) { console.error(`[goals] ${e.message}`); }
+  try { journey.applyConsolidation(parsed, node.id, now); } catch (e) { console.error(`[journey] ${e.message}`); }
+  if (parsed.nextOpener) {
+    memory.setNextOpener({
+      blurb: stripMarkdown(parsed.nextOpener.blurb || "").trim(),
+      options: Array.isArray(parsed.nextOpener.options) ? parsed.nextOpener.options.map((o) => stripMarkdown(o).trim()) : [],
+    });
+  }
   clearCurrent();
   return { ended: true, node };
 }
@@ -322,32 +438,113 @@ function getOpener(cfg) {
   const name = profile.name || (cfg && cfg.user && cfg.user.name) || "";
   const sessions = memory.listSessions();
 
+  // These ride along for every style: report-back chips for open noticing
+  // assignments, deterministic journey starters (passed event / experiment
+  // check-in — at most one), and whether an explore session makes sense yet.
+  const reportBacks = memory.openAssignments().slice(0, 2).map((a) => ({
+    id: a.id,
+    label: `Report back: ${a.text.length > 44 ? a.text.slice(0, 44).trim() + "…" : a.text}`,
+    message: `I want to report back on what I was noticing: "${a.text}"`,
+  }));
+  const starters = journey.openerCandidates();
+  const base = { style, reportBacks, starters, canExplore: sessions.length > 0 || !!profile.lifeContext };
+
   if (style === "open") {
-    return { style, blurb: `Hi${name ? " " + name : ""}. What's on your mind?`, options: [] };
+    return { ...base, blurb: `Hi${name ? " " + name : ""}. What's on your mind?`, options: [] };
   }
 
-  if (style === "smart" && profile.nextOpener && profile.nextOpener.blurb) {
-    return { style, ...profile.nextOpener };
+  const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const seen = new Set(starters.map((s) => norm(s.label)));
+  const dedupe = (arr) => arr.filter((o) => {
+    const n = norm(o);
+    if (!n || seen.has(n)) return false;
+    seen.add(n);
+    return true;
+  });
+
+  // Fresh, consolidation-generated opener — used for every style except "open".
+  if (profile.nextOpener && profile.nextOpener.blurb) {
+    let options = dedupe((profile.nextOpener.options || []).map((o) => String(o).trim()));
+    if (!options.some((o) => /something new/i.test(o))) options.push("Something new today");
+    return { ...base, blurb: profile.nextOpener.blurb, options: options.slice(0, 3) };
   }
 
   if (sessions.length) {
     const last = sessions[0];
-    const options = [`Pick up on “${last.title}”`];
-    for (const c of (profile.presentingConcerns || []).slice(0, 2)) options.push(c.replace(/^["']|["']$/g, "").slice(0, 60));
+    const candidates = [`Pick up on “${last.title}”`];
+    const recent = (profile.presentingConcerns || []).slice(-1)[0];
+    if (recent && norm(recent) !== norm(last.title)) {
+      const short = recent.replace(/^["']|["']$/g, "");
+      candidates.push(short.length > 48 ? short.slice(0, 48).trim() + "…" : short);
+    }
+    const options = dedupe(candidates);
     options.push("Something new today");
     return {
-      style,
+      ...base,
       blurb: `Hi${name ? " " + name : ""}. Last time we sat with “${last.title}.” We can pick that thread back up, or start somewhere new — whatever feels right.`,
-      options: [...new Set(options)].slice(0, 3),
+      options: options.slice(0, 3),
     };
   }
 
   // First-ever session.
   return {
-    style,
+    ...base,
     blurb: `Hi${name ? " " + name : ""}. There's no agenda here — we can start wherever you like. What's been sitting with you lately?`,
     options: [],
   };
+}
+
+/**
+ * First message of a deliberate explore session: a good question, generated
+ * from the working model. Deterministic fallback if the call fails.
+ */
+async function getExploreOpener() {
+  const cfg = loadConfig() || {};
+  const recentSessions = memory.listSessions().slice(0, 3)
+    .map((s) => `- ${s.id} — "${s.title}": ${s.summary}`).join("\n");
+  try {
+    const raw = await timedComplete(
+      "explore-opener",
+      T.buildExploreOpenerPrompt({
+        profileBlock: memory.profileContext(),
+        hypothesesBlock: memory.hypothesesContext({ mode: "explore" }),
+        assignmentsBlock: memory.assignmentsContext(),
+        recentSessions,
+        timeBlock: buildTimeBlock("route"),
+      }),
+      { provider: cfg.provider, config: cfg }
+    );
+    const parsed = parseJsonLoose(raw);
+    if (parsed && parsed.blurb) {
+      return {
+        mode: "explore",
+        blurb: stripMarkdown(parsed.blurb).trim(),
+        options: (Array.isArray(parsed.options) ? parsed.options.slice(0, 3) : []).map((o) => stripMarkdown(o).trim()),
+      };
+    }
+  } catch (e) { console.error(`[explore-opener] ${e.message}`); }
+
+  // Deterministic fallback: the newest hypothesis being tested, else the biggest gap.
+  const testing = memory.getHypotheses().filter((h) => h.status === "testing" || h.status === "forming")
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))[0];
+  const blurb = testing
+    ? `There's something I've been noticing that we haven't looked at head-on: "${testing.statement}." Want to look at it together and see if it actually fits? If something else feels more alive, we go there instead.`
+    : `Let's get to know each other a bit better — no agenda, just curiosity. What's something about how you work that you've never quite been able to explain to yourself?`;
+  return { mode: "explore", blurb, options: ["Let's look at it", "Somewhere else today"] };
+}
+
+/**
+ * Deliberate explore start: switch the session to explore mode and, when it's
+ * fresh, generate the opening question AND persist it as an assistant message —
+ * the model must see its own question in the transcript when the person replies.
+ */
+async function startExploreSession() {
+  const session = setSessionMode("explore");
+  if (session.messages.length) return { mode: "explore", opener: null };
+  const opener = await getExploreOpener();
+  session.messages.push({ role: "assistant", content: opener.blurb });
+  saveCurrent(session);
+  return { mode: "explore", opener };
 }
 
 // ─── Onboarding (conversational sections + finish/extraction) ─────────────────
@@ -426,6 +623,15 @@ async function onboardFinish(input = {}) {
     tone: mc.tone || "",
   };
   memory.seedFromOnboardingExtraction(data);
+
+  // Wire the tone answer into the store the runtime actually reads
+  // (buildToneDirective reads cfg.user.tone/toneDials, not the profile).
+  if (mc.tone) {
+    cfg.user = cfg.user || {};
+    cfg.user.tone = mc.tone;
+    cfg.user.toneDials = T.resolveDials({ tone: mc.tone });
+    saveConfig(cfg);
+  }
   return { ok: true, seeded: data };
 }
 
@@ -434,7 +640,7 @@ async function onboardFinish(input = {}) {
 function currentSessionView() {
   const s = loadCurrent();
   return s
-    ? { active: true, id: s.id, turns: s.messages.filter((m) => m.role === "user").length, activeSkill: s.activeSkill, skillsUsed: s.skillsUsed, messages: s.messages }
+    ? { active: true, id: s.id, mode: s.mode, turns: s.messages.filter((m) => m.role === "user").length, activeSkill: s.activeSkill, skillsUsed: s.skillsUsed, messages: s.messages }
     : { active: false, messages: [] };
 }
 
@@ -445,6 +651,9 @@ module.exports = {
   handleTurn,
   endSession,
   getOpener,
+  getExploreOpener,
+  startExploreSession,
+  setSessionMode,
   onboardChat,
   onboardFinish,
   currentSessionView,

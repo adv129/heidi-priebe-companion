@@ -11,7 +11,15 @@
 
 "use strict";
 
-function buildRoutePrompt({ catalog, routingTable, transcriptTail, currentSkill, sessionHistory }) {
+function buildRoutePrompt({ catalog, routingTable, transcriptTail, currentSkill, sessionHistory, mode, suggestedExploreAlready, timeLine }) {
+  const explore = mode === "explore"
+    ? `- This is an EXPLORE session (structured getting-to-know-them). The skill you pick is the DIAGNOSTIC
+  LENS for the current thread of inquiry — what to listen for — not a curriculum to teach.
+- "suggestExplore" must be false (already exploring).`
+    : `- "suggestExplore": set true ONLY when the person has surfaced something genuinely worth structured
+  digging — a repeated shape across stories, a contradiction they seem curious about, a strong reaction
+  they don't understand — AND the moment is steady (never mid-vent, never in distress). At most once per
+  session${suggestedExploreAlready ? " — ALREADY SUGGESTED this session, so it must be false" : ""}. It offers to switch into a dedicated explore (get-to-know-you-deeper) session.`;
   return `You are the routing/planning component of a therapeutic-companion agent built on Heidi Priebe's
 frameworks. Plan the assistant's next reply. You do NOT write the reply — you make structured decisions.
 
@@ -25,6 +33,7 @@ Principles (from the agent-core orchestrator):
 - Only "consult" a second framework when the active skill genuinely needs it (rare).
 - Set "close" true ONLY if the exchange has reached a natural, settled stopping point (a resolution,
   a wind-down, a "thanks, that helps") — not mid-exploration.
+${explore}
 
 TOPICAL SKILLS AVAILABLE:
 ${catalog}
@@ -33,13 +42,14 @@ AGENT-CORE ROUTING SIGNALS (presenting signal → skill):
 ${routingTable}
 
 CURRENT ACTIVE SKILL: ${currentSkill || "(none)"}
+${timeLine ? `TIME (server-computed): ${timeLine}` : ""}
 ${sessionHistory ? `\nPAST SESSIONS ON RECORD (id — title):\n${sessionHistory}` : ""}
 
 RECENT CONVERSATION (most recent last):
 ${transcriptTail}
 
 Respond with ONLY a JSON object, no prose, exactly this shape:
-{"skill":"<skill-name|stay|none>","reference":"<reference-filename.md|null>","recall":"<past-session-id|null>","consult":"<skill-name|null>","close":<true|false>,"reason":"<one short sentence: why this lens>"}`;
+{"skill":"<skill-name|stay|none>","reference":"<reference-filename.md|null>","recall":"<past-session-id|null>","consult":"<skill-name|null>","close":<true|false>,"suggestExplore":<true|false>,"reason":"<one short sentence: why this lens>"}`;
 }
 
 module.exports = { buildRoutePrompt };
