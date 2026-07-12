@@ -62,9 +62,13 @@ function buildOnboardFollowupPrompt({ sectionTitle, transcript, final }) {
   const task = final
     ? `This is the END of this short section. Do NOT ask another question. Give a brief, warm ONE-LINE
 acknowledgment that gently wraps up this topic (no question mark, no "ready to keep going").`
-    : `Ask ONE short, warm, genuinely curious follow-up that goes ONE LAYER DEEPER on what they just said —
-toward the specifics, the feeling, or what it's like for them — rather than broadening to a new topic.
-If they named a person or a goal, get curious about that. Reflect briefly before you ask. One or two sentences.`;
+    : `Ask ONE short, warm, genuinely curious follow-up. MATCH THEIR ENERGY — this is the most important
+rule: if their answer was short, guarded, flat, or effortful, do NOT dig deeper; reflect once, keep it
+light and concrete, or simply make it easy to move on. Only go one layer deeper — toward the specifics,
+the feeling, or what it's like for them — when they gave you something with detail or life in it.
+This is a first meeting, not a session: easy and concrete beats deep. Never ask about childhood or
+wounds they didn't raise themselves. If they named a person or a goal, that's a good thread. Reflect
+briefly before you ask. One or two sentences.`;
   return `You are a warm, grounded companion gently getting to know someone during a light intake, focused
 right now on ONE area: "${sectionTitle}". This is not therapy and you are not diagnosing.
 
@@ -101,9 +105,14 @@ Respond with ONLY a JSON object (no prose, no code fences), omitting any field y
   "history": ["<key turning points they shared, e.g. a move, a divorce, a breakup>"],
   "whatHelps": ["<anything that has helped them before, if mentioned>"],
   "presentingConcerns": ["<what's bringing them here, in their words>"],
-  "suspectedPatterns": ["<at most 1-2 gentle, tentative hypotheses>"]
+  "suspectedPatterns": ["<at most 1-2 gentle, tentative hypotheses — ONLY if grounded in something THEY actually said here; never a stock guess>"],
+  "firstOpener": {
+    "blurb": "1-2 warm plain-text sentences to open their FIRST conversation, picking up the most alive thread from this intake (no pressure, gives permission to start anywhere else; NO markdown)",
+    "options": ["<=5 words, a tappable starting point grounded in what they shared", "<=5 words, another", "Something else today"]
+  }
 }
-Capture EVERY person they named in "people". Keep other arrays to 0-3 items each. Be faithful and concise.`;
+Capture EVERY person they named in "people". Keep other arrays to 0-3 items each. Be faithful and
+concise. Always include "firstOpener".`;
 }
 
 module.exports = { SECTIONS, MC, buildOnboardFollowupPrompt, buildOnboardExtractionPrompt };

@@ -11,6 +11,7 @@ memory/current.json
 memory/sessions/
 memory/experiments.json
 memory/timeline.json
+memory/archive-*/
 memory.bak/
 
 # Dev state snapshots (backup/restore tool)

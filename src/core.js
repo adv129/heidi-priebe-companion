@@ -569,6 +569,17 @@ async function onboardFinish(input = {}) {
   const cfg = loadConfig() || {};
   const mc = input.mc || {};
 
+  // A finishing onboarding means a (possibly new) person. NEVER inherit the
+  // previous memory — one person's patterns/goals must not leak into the next
+  // profile. Existing learned data is archived (moved, not deleted), then the
+  // fresh profile is seeded from this onboarding alone.
+  let archivedTo = null;
+  if (memory.hasLearnedData()) {
+    archivedTo = memory.archiveAll();
+    console.log(`[onboard] previous memory archived to ${archivedTo}`);
+  }
+  memory.seedProfileFromOnboarding({ name: (cfg.user && cfg.user.name) || "", tone: mc.tone });
+
   // Deterministic MC fields → profile / config (no LLM needed for these).
   // readiness is an ordered array (click order = priority); emotionalStyle is multi-select.
   const readinessArr = (Array.isArray(mc.readiness) ? mc.readiness : (mc.readiness ? [mc.readiness] : [])).filter(Boolean);
@@ -624,6 +635,15 @@ async function onboardFinish(input = {}) {
   };
   memory.seedFromOnboardingExtraction(data);
 
+  // The extraction also drafts the FIRST session's opener, so the person's
+  // first Talk screen starts from what they just shared, not a generic line.
+  if (extracted.firstOpener && extracted.firstOpener.blurb) {
+    memory.setNextOpener({
+      blurb: stripMarkdown(extracted.firstOpener.blurb).trim(),
+      options: Array.isArray(extracted.firstOpener.options) ? extracted.firstOpener.options.map((o) => stripMarkdown(o).trim()) : [],
+    });
+  }
+
   // Wire the tone answer into the store the runtime actually reads
   // (buildToneDirective reads cfg.user.tone/toneDials, not the profile).
   if (mc.tone) {
@@ -632,7 +652,7 @@ async function onboardFinish(input = {}) {
     cfg.user.toneDials = T.resolveDials({ tone: mc.tone });
     saveConfig(cfg);
   }
-  return { ok: true, seeded: data };
+  return { ok: true, seeded: data, archived: !!archivedTo };
 }
 
 // ─── Management ──────────────────────────────────────────────────────────────

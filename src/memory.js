@@ -714,11 +714,37 @@ function deleteAll() {
     for (const f of fs.readdirSync(SESSIONS_DIR)) fs.unlinkSync(path.join(SESSIONS_DIR, f));
   } catch {}
   saveGraph(defaultGraph());
-  // Keep name + onboarding seed; clear learned/derived fields.
-  const p = loadProfile();
-  const fresh = { ...defaultProfile(), name: p.name, onboarding: p.onboarding, createdAt: p.createdAt };
-  saveProfile(fresh);
+  // A full wipe keeps NOTHING — carrying the old name/onboarding forward is how
+  // one person's goals used to leak into the next person's profile.
+  saveProfile(defaultProfile());
   return { ok: true };
+}
+
+/** Anything learned on record? (Used to decide whether onboarding must archive first.) */
+function hasLearnedData() {
+  const p = loadProfile();
+  const g = loadGraph();
+  return !!(
+    g.sessions.length || p.hypotheses.length || p.goals.length || p.assignments.length ||
+    p.lifeContext || (p.people && p.people.length) || p.presentingConcerns.length
+  );
+}
+
+/**
+ * Move the entire memory store into memory/archive-<stamp>/ so a NEW person can
+ * onboard without inheriting the previous person's patterns, goals, or sessions.
+ * Nothing is deleted — restoring is moving the files back.
+ */
+function archiveAll() {
+  ensureDirs();
+  const dir = path.join(MEM_DIR, `archive-${stamp().id}`);
+  fs.mkdirSync(dir, { recursive: true });
+  for (const f of ["profile.json", "graph.json", "current.json", "experiments.json", "timeline.json"]) {
+    try { fs.renameSync(path.join(MEM_DIR, f), path.join(dir, f)); } catch {}
+  }
+  try { fs.renameSync(SESSIONS_DIR, path.join(dir, "sessions")); } catch {}
+  ensureDirs(); // recreate the empty sessions/ dir
+  return dir;
 }
 
 module.exports = {
@@ -742,6 +768,8 @@ module.exports = {
   memoryView,
   deleteSession,
   deleteAll,
+  hasLearnedData,
+  archiveAll,
   // Understanding engine
   applyHypothesisUpdates,
   applyAssignmentUpdates,

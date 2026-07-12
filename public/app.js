@@ -109,42 +109,61 @@ let ob = null;
 
 // Each topic the person can pick maps to a tailored opening question for its
 // conversational section. Custom/unmapped topics get a generic seed.
+// Seeds stay concrete and low-stakes — depth is earned later in real sessions,
+// not demanded at a first meeting.
 const TOPIC_SECTIONS = {
-  "Relationships & dating": { title: "Relationships", seed: "Who are the most important and impactful relationships in your life right now?" },
+  "Relationships & dating": { title: "Relationships", seed: "What does your relationship life look like these days?" },
   "Anxious or avoidant patterns in love": { title: "Patterns in love", seed: "When you get close to someone, what tends to happen — do you reach for them, pull back, or something in between?" },
-  "Family & how I was raised": { title: "Family", seed: "What was the emotional weather like in the home you grew up in?" },
-  "Feeling flawed, not enough, or ashamed": { title: "Self-worth", seed: "When that 'not enough' feeling shows up, whose voice or what moment does it bring to mind?" },
+  "Family & how I was raised": { title: "Family", seed: "Tell me a little about your family these days — who's around, and how do things feel with them?" },
+  "Feeling flawed, not enough, or ashamed": { title: "Self-worth", seed: "When does that 'not enough' feeling tend to show up for you these days?" },
   "People-pleasing & losing myself": { title: "People-pleasing", seed: "Where in your life do you find yourself saying yes when you really mean no?" },
   "Understanding & actually feeling my emotions": { title: "Emotions", seed: "When something big happens, do you tend to feel it in the moment, or does it catch up with you later?" },
-  "A hard childhood / healing old wounds": { title: "Early life", seed: "Is there something from earlier in your life that still feels unfinished, if you're open to sharing?" },
-  "Grief, a breakup, or letting go": { title: "Loss & letting go", seed: "What are you grieving or trying to let go of right now?" },
+  "A hard childhood / healing old wounds": { title: "Early life", seed: "Only as much as you feel like sharing — is there a part of your earlier life that still feels present today?" },
+  "Grief, a breakup, or letting go": { title: "Loss & letting go", seed: "What are you carrying or trying to let go of right now — in whatever words come easily?" },
   "Boundaries & codependency": { title: "Boundaries", seed: "Where does taking care of others start to cost you — where does the line get blurry?" },
-  "Being honest with myself / feeling stuck": { title: "Honesty with yourself", seed: "Is there something you suspect you already know, but haven't fully let yourself admit?" },
+  "Being honest with myself / feeling stuck": { title: "Honesty with yourself", seed: "Where in your life does 'stuck' show up the most right now?" },
   "Personality & self-understanding": { title: "Self-understanding", seed: "How would you describe yourself to someone who's never met you?" },
   "Anxiety": { title: "Anxiety", seed: "When anxiety shows up for you, what does it tend to circle around?" },
 };
 
-const MAX_SECTIONS = 3; // cap conversational sections to avoid fatigue
+const MAX_TOPIC_SECTIONS = 2; // cap topic sections to avoid fatigue
 
-// Build the conversational sections: two core sections everyone gets (what you
-// want, and the people in your life), then topic-driven sections from the MC.
-// Core sections go deeper (adaptive); topic sections stay short. All skippable.
+// Conversational sections, EASY → DEEPER: start with plain day-to-day life,
+// then their chosen topics, then people, and only at the end the (explicitly
+// optional) why-now question. All skippable at any time.
 function obSectionDefs() {
-  const core = [
-    { id: "why-now", title: "Why now & what you want", seed: "What made you want to start doing this kind of work on yourself right now?", maxTurns: 3 },
-    { id: "people", title: "The people in your life", seed: "Who are the people who matter most to you right now?", maxTurns: 3 },
-  ];
   const picked = (ob.mc.topics || []).filter((t) => t && t !== "Not sure yet");
   const custom = ob.mc.other && ob.mc.other.topics && ob.mc.other.topics.trim() ? [ob.mc.other.topics.trim()] : [];
-  const topics = [...picked, ...custom].slice(0, MAX_SECTIONS).map((t, i) => {
+  const topics = [...picked, ...custom].slice(0, MAX_TOPIC_SECTIONS).map((t, i) => {
     const m = TOPIC_SECTIONS[t];
     return { id: "t" + i, title: m ? m.title : t, seed: m ? m.seed : `You mentioned "${t}." What's going on there for you?`, maxTurns: 2 };
   });
-  return [...core, ...topics];
+  return [
+    { id: "today", title: "Life right now", seed: "Let's start easy. What does day-to-day life look like for you at the moment — work, school, where you're living, that kind of thing?", maxTurns: 2 },
+    ...topics,
+    { id: "people", title: "The people in your life", seed: "Who are the people who matter most to you right now?", maxTurns: 2 },
+    { id: "why-now", title: "Why now", seed: "Last one — and only if you feel like going there: what made now feel like the moment to start doing this kind of work?", maxTurns: 2 },
+  ];
 }
 
 function obSteps() {
-  return ["provider", "consent", "name", "mc", ...obSectionDefs().map((s) => "section:" + s.id), "finish"];
+  return ["provider", "consent", "name", "mc1", "mc2", ...obSectionDefs().map((s) => "section:" + s.id), "finish"];
+}
+
+// Progress chips across the wizard (collapses the chat sections into one stage).
+function obProgressHtml() {
+  const stages = [
+    ["provider|consent", "Setup"],
+    ["name", "Name"],
+    ["mc1|mc2", "Quick taps"],
+    ["section:", "A short chat"],
+    ["finish", "Ready"],
+  ];
+  const cur = obSteps()[ob.i] || "";
+  return `<div class="steps">${stages.map(([match, label]) => {
+    const on = match.split("|").some((m) => cur === m || (m.endsWith(":") && cur.startsWith(m)));
+    return `<span class="step ${on ? "on" : ""}">${label}</span>`;
+  }).join("")}</div>`;
 }
 
 async function renderOnboard() {
@@ -158,7 +177,8 @@ async function renderOnboard() {
   if (cur === "provider") return obProvider();
   if (cur === "consent") return obConsent();
   if (cur === "name") return obName();
-  if (cur === "mc") return obMC();
+  if (cur === "mc1") return obMC(1);
+  if (cur === "mc2") return obMC(2);
   if (cur.startsWith("section:")) return obSection(cur.slice(8));
   if (cur === "finish") return obFinish();
 }
@@ -166,7 +186,7 @@ async function renderOnboard() {
 function obShell(inner, opts = {}) {
   const back = ob.i > 0 && !opts.noBack ? `<button id="ob-back">Back</button>` : `<span></span>`;
   const right = opts.right != null ? opts.right : `<button class="primary" id="ob-next">${opts.nextLabel || "Next"}</button>`;
-  app.innerHTML = `<div class="ob-wrap">${inner}<div class="row spread" style="margin-top:24px">${back}${right}</div></div>`;
+  app.innerHTML = `<div class="ob-wrap">${obProgressHtml()}${inner}<div class="row spread" style="margin-top:24px">${back}${right}</div></div>`;
   const b = document.getElementById("ob-back");
   if (b) b.addEventListener("click", () => { ob.i = Math.max(0, ob.i - 1); renderOnboard(); });
   const n = document.getElementById("ob-next");
@@ -266,10 +286,16 @@ function wireChips(g) {
   }));
 }
 
-function obMC() {
-  const groups = obGroups();
-  const inner = `<h1>A few quick taps</h1>
-    <p class="sub">Just a head start — nothing's binding, and you can skip. For "what you want," tap in priority order.</p>
+function obMC(page) {
+  // Two light pages instead of one wall: (1) what brings you + what you want,
+  // (2) how I should be with you + how feelings tend to go.
+  const all = obGroups();
+  const groups = page === 1 ? all.slice(0, 2) : all.slice(2);
+  const heads = page === 1
+    ? { h1: "A few quick taps", sub: "Just a head start — nothing's binding, and you can skip anything. For \"what you want,\" tap in priority order." }
+    : { h1: "How should this feel?", sub: "You can change all of this later, anytime." };
+  const inner = `<h1>${heads.h1}</h1>
+    <p class="sub">${heads.sub}</p>
     ${groups.map((g) => `
       <div class="mc-group">
         <label>${g.label}</label>
@@ -340,16 +366,19 @@ function obSectionComposer(id, sec) {
     input.value = ""; autoGrow(input);
     st.messages.push({ role: "user", content: v });
     obBubble(chat, "user", v);
-    const typing = obBubble(chat, "assistant", ""); typing.classList.add("spin");
+    // Same thinking indicator as the main chat: the unfurling paper scroll.
+    const typing = obBubble(chat, "assistant", "");
+    typing.classList.add("loading");
+    typing.appendChild(scrollLoader());
     chat.scrollTop = chat.scrollHeight;
     document.getElementById("ob-send").disabled = true;
     const finalTurn = st.messages.filter((m) => m.role === "user").length >= (sec.maxTurns || 2);
     try {
       const r = await api("POST", "/api/onboard/chat", { title: sec.title, messages: st.messages, final: finalTurn });
-      typing.classList.remove("spin"); typing.textContent = r.reply;
+      typing.classList.remove("loading"); typing.textContent = r.reply;
       st.messages.push({ role: "assistant", content: r.reply });
     } catch (e) {
-      typing.classList.remove("spin"); typing.textContent = "(let's keep going)";
+      typing.classList.remove("loading"); typing.textContent = "(let's keep going)";
       st.messages.push({ role: "assistant", content: "(let's keep going)" });
     }
     chat.scrollTop = chat.scrollHeight;
@@ -380,7 +409,9 @@ async function obFinish() {
     });
     await api("POST", "/api/onboard/finish", {
       mc: mergedMc,
-      sections: (obOptions.sections || []).map((s) => ({ id: s.id, title: s.title, messages: (ob.sec[s.id] && ob.sec[s.id].messages) || [] })),
+      // The sections the person ACTUALLY chatted through (obSectionDefs), not the
+      // server's static list — this used to send an empty transcript to extraction.
+      sections: obSectionDefs().map((s) => ({ id: s.id, title: s.title, messages: (ob.sec[s.id] && ob.sec[s.id].messages) || [] })),
     });
     appConfig = await api("GET", "/api/config");
     ob = null;
@@ -1136,7 +1167,10 @@ async function renderSettings() {
     <div class="card">
       <h2 style="margin-top:0">Privacy</h2>
       <p class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.86rem">All memory lives locally in this app's <code>memory/</code> folder. Deleting is permanent.</p>
-      <button class="danger" id="s-wipe">Delete all memory</button>
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <button class="danger" id="s-wipe">Delete all memory</button>
+        <button id="s-newperson" title="Runs onboarding again for someone else — the current profile and sessions are archived, never inherited">Set up for a new person</button>
+      </div>
     </div>`;
 
   // Live-update the "n/5" readout as each slider moves.
@@ -1168,6 +1202,15 @@ async function renderSettings() {
   app.querySelector("#s-wipe").addEventListener("click", async () => {
     if (!confirm("Delete ALL saved memory (profile + every session)? This cannot be undone.")) return;
     try { await api("DELETE", "/api/memory"); alert("Memory cleared."); } catch (e) { alert("Error: " + e.message); }
+  });
+  app.querySelector("#s-newperson").addEventListener("click", async () => {
+    if (!confirm("Start onboarding for a new person? The current profile, patterns, goals and sessions will be archived (kept on disk, not deleted) the moment the new onboarding finishes.")) return;
+    try {
+      const r = await api("POST", "/api/config", { setupComplete: false, consentAcknowledged: false, user: { name: "" } });
+      appConfig = r.config;
+      ob = null;
+      location.hash = "#/onboard";
+    } catch (e) { alert("Error: " + e.message); }
   });
 }
 
