@@ -55,6 +55,13 @@ review), then into **Talk**.
 - **An experiments loop.** Once a pattern is confirmed *with you* and you want change, you co-design
   small experiments (a new response in place of the old pattern) with honest check-ins — tracked on
   the Journey tab, framed as curiosity, never pass/fail.
+- **Therapist briefs.** The Therapist view composes a print-ready document to send to a real-world
+  therapist: pick a preset (**First meeting intro** or a windowed **Pre-session update**, defaulting
+  to "since your last brief"), untick any section or individual item you'd rather keep private, and
+  an AI narrative opens the document — built only from what you ticked, reviewed and editable before
+  anything is saved. Saved briefs are immutable snapshots (`memory/briefs.json`) you can reopen and
+  reprint. (Chromium's Save-as-PDF gives the cleanest output; the per-page footer may print
+  last-page-only in Firefox.)
 - **Safety first.** A crisis pre-check plus always-on safety instructions suspend framework work and
   surface real-world resources when needed.
 
@@ -62,12 +69,13 @@ review), then into **Talk**.
 
 ```
 src/       server.js · core.js (turn pipeline) · provider.js · skills.js · memory.js
-           journey.js (experiments + timeline stores) · timeaware.js (time context) · safety.js · templates/
-public/    index.html · app.js · style.css   (the SPA: Talk · Journey · Settings)
+           journey.js (experiments + timeline stores) · brief.js (therapist briefs)
+           timeaware.js (time context) · safety.js · templates/
+public/    index.html · app.js · style.css   (the SPA: Talk · Journey · Settings · Therapist)
 skills/    the knowledge base (one folder per skill: SKILL.md + references/)
 skills.json  machine-readable manifest (regenerate: npm run manifest)
 memory/    profile.json (incl. hypotheses + assignments) · graph.json · sessions/
-           experiments.json · timeline.json   (local, gitignored, sensitive)
+           experiments.json · timeline.json · briefs.json   (local, gitignored, sensitive)
 ```
 
 ## Privacy

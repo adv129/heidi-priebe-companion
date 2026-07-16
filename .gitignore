@@ -11,8 +11,11 @@ memory/current.json
 memory/sessions/
 memory/experiments.json
 memory/timeline.json
+memory/briefs.json
 memory/archive-*/
 memory.bak/
+memory.sim-safekeeping/
+config.sim-backup.json
 
 # Dev state snapshots (backup/restore tool)
 _snapshots/

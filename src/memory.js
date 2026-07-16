@@ -226,6 +226,25 @@ function seedFromOnboardingExtraction(data = {}) {
   return saveProfile(p);
 }
 
+/**
+ * Direct profile additions from the UI's fill-in-your-picture exercises:
+ * structured people entries and plain goal lines. Same merge rules as
+ * consolidation (dedupe by name / normalized text).
+ */
+function addDirect({ people, goals } = {}) {
+  const p = loadProfile();
+  if (Array.isArray(people)) {
+    mergePeople(p, people.filter((x) => x && x.name).map((x) => ({
+      name: String(x.name),
+      relationship: String(x.relationship || ""),
+      notes: [String(x.notes || ""), x.workingOn ? "(a relationship they're working on)" : ""].filter(Boolean).join(" "),
+    })));
+  }
+  if (Array.isArray(goals)) mergeGoals(p, goals.map((g) => String(g || "").trim()).filter(Boolean));
+  saveProfile(p);
+  return { ok: true, people: p.people.length, goals: p.goals.length };
+}
+
 /** Save the pre-generated opener for next session (called at session end). */
 function setNextOpener(opener) {
   const p = loadProfile();
@@ -739,7 +758,7 @@ function archiveAll() {
   ensureDirs();
   const dir = path.join(MEM_DIR, `archive-${stamp().id}`);
   fs.mkdirSync(dir, { recursive: true });
-  for (const f of ["profile.json", "graph.json", "current.json", "experiments.json", "timeline.json"]) {
+  for (const f of ["profile.json", "graph.json", "current.json", "experiments.json", "timeline.json", "briefs.json"]) {
     try { fs.renameSync(path.join(MEM_DIR, f), path.join(dir, f)); } catch {}
   }
   try { fs.renameSync(SESSIONS_DIR, path.join(dir, "sessions")); } catch {}
@@ -757,6 +776,7 @@ module.exports = {
   saveProfile,
   seedProfileFromOnboarding,
   seedFromOnboardingExtraction,
+  addDirect,
   setNextOpener,
   loadGraph,
   saveGraph,

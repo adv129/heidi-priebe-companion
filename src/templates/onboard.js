@@ -19,24 +19,107 @@ const SECTIONS = [
   },
 ];
 
-// Multiple-choice options for Phase A (mirrored in the front-end).
+// Multiple-choice options for Phase A (served to the front-end).
+//
+// The intake QUESTIONNAIRE — how Heidi actually maps a person: a handful of
+// broad, easy questions anyone can answer in one tap, each sweeping one of her
+// territories (life overall, love, family, the relationship with feelings,
+// self-talk/shame, loss, boundaries, direction). No option requires
+// self-awareness or self-diagnosis — the answers just locate where it hurts.
+//
+// Options carry a `signal` (0-3, how much this answer lights the territory up)
+// and, when lit, the `title` + `seed` of the conversational section that answer
+// turns into. Seeds echo the person's own answer ("You said…") and ask for a
+// story, not an insight.
+const QUESTIONNAIRE = [
+  {
+    id: "overall",
+    q: "How's life feeling lately, overall?",
+    options: [
+      { label: "Pretty good", signal: 0 },
+      { label: "Up and down", signal: 0 },
+      { label: "Heavy", signal: 1, title: "The heaviness", seed: "You said life's been feeling heavy. Where does the weight sit, if you had to point at it?" },
+      { label: "Numb — not much of anything", signal: 2, title: "The numbness", seed: "You said things feel numb. When did you last really feel something — good or bad?" },
+      { label: "Chaotic", signal: 1, title: "The chaos", seed: "You said things feel chaotic. What's the loudest part right now?" },
+    ],
+  },
+  {
+    id: "love",
+    q: "And your love life — partner, dating, or nothing at all — how's that part?",
+    options: [
+      { label: "Warm, solid", signal: 0 },
+      { label: "It's fine", signal: 0 },
+      { label: "Complicated", signal: 2, title: "The complicated part", seed: "You said your love life is complicated. What's the complication, in plain words?" },
+      { label: "Painful right now", signal: 3, title: "What hurts", seed: "You said it's painful right now. What happened — as much or as little as you want." },
+      { label: "Not part of my life right now", signal: 1, title: "On your own", seed: "Is being on your own right now a choice, a relief, a sore spot — or some mix?" },
+    ],
+  },
+  {
+    id: "family",
+    q: "How are things with your family?",
+    options: [
+      { label: "Easy, mostly", signal: 0 },
+      { label: "We're not close", signal: 1, title: "The distance", seed: "You said you're not close with family. Is that a peaceful distance, or the other kind?" },
+      { label: "Complicated", signal: 2, title: "Family", seed: "You said family's complicated. Who's the complicated part with?" },
+      { label: "Draining", signal: 3, title: "Family", seed: "You said family's draining. What happens on a typical call or visit?" },
+      { label: "Rather not say yet", signal: 0 },
+    ],
+  },
+  {
+    id: "feelings",
+    q: "When a hard feeling shows up, what usually happens?",
+    options: [
+      { label: "I feel it, and it passes", signal: 0 },
+      { label: "I get busy with something", signal: 2, title: "Staying busy", seed: "You said you get busy when a hard feeling shows up. What do you usually reach for?" },
+      { label: "I go quiet and pull away", signal: 2, title: "Going quiet", seed: "You said you go quiet. What's happening on the inside while you're quiet?" },
+      { label: "It takes over", signal: 2, title: "The wave", seed: "You said feelings can take over. What does that look like from the inside?" },
+      { label: "Honestly, I'm not sure", signal: 1, title: "Noticing feelings", seed: "Totally fair. When did you last notice a feeling clearly — even a small one?" },
+    ],
+  },
+  {
+    id: "selftalk",
+    q: "When you mess something up, how do you talk to yourself?",
+    options: [
+      { label: "Kindly enough", signal: 0 },
+      { label: "Fair, but firm", signal: 0 },
+      { label: "Harshly", signal: 2, title: "The inner voice", seed: "You said you're harsh with yourself. What does that voice actually say — word for word, if you can?" },
+      { label: "Brutally", signal: 3, title: "The inner voice", seed: "You said you're brutal with yourself. What does that voice actually say — word for word, if you can?" },
+    ],
+  },
+  {
+    id: "loss",
+    q: "Are you carrying a loss right now — a person, a relationship, a chapter of life?",
+    options: [
+      { label: "No", signal: 0 },
+      { label: "Maybe", signal: 1, title: "The maybe", seed: "You said maybe there's a loss in the picture. What's the maybe?" },
+      { label: "Yes — a recent one", signal: 3, title: "Loss", seed: "Who or what — in whatever words come easily." },
+      { label: "Yes — an old one that still aches", signal: 2, title: "An old loss", seed: "Tell me about it — whatever wants to be said." },
+    ],
+  },
+  {
+    id: "others",
+    q: "How often do you go along with things you don't really want, to keep the peace?",
+    options: [
+      { label: "Rarely", signal: 0 },
+      { label: "Sometimes", signal: 0 },
+      { label: "A lot", signal: 2, title: "Keeping the peace", seed: "You said you go along with things a lot. Where does that happen most — work, home, friends?" },
+      { label: "Constantly — it's my default", signal: 3, title: "Keeping the peace", seed: "You said keeping the peace is your default. Where does it cost you the most?" },
+    ],
+  },
+  {
+    id: "direction",
+    q: "Do you feel like you know what you want right now — in life, roughly?",
+    options: [
+      { label: "Yes", signal: 0 },
+      { label: "Mostly", signal: 0 },
+      { label: "Not really", signal: 2, title: "What you want", seed: "You said you don't really know what you want right now. If nothing changed for a year, what would bother you most?" },
+      { label: "I've stopped asking", signal: 3, title: "What you want", seed: "You said you've stopped asking what you want. When did you stop, roughly?" },
+    ],
+  },
+];
+
 const MC = {
-  // Covers Heidi Priebe's full range (maps loosely onto the 9 topical skills).
-  topics: [
-    "Relationships & dating",
-    "Anxious or avoidant patterns in love",
-    "Family & how I was raised",
-    "Feeling flawed, not enough, or ashamed",
-    "People-pleasing & losing myself",
-    "Understanding & actually feeling my emotions",
-    "A hard childhood / healing old wounds",
-    "Grief, a breakup, or letting go",
-    "Boundaries & codependency",
-    "Being honest with myself / feeling stuck",
-    "Personality & self-understanding",
-    "Anxiety",
-    "Not sure yet",
-  ],
+  quiz: QUESTIONNAIRE,
   readiness: [
     { value: "venting", label: "I mostly want to be heard" },
     { value: "wants insight", label: "I want to understand myself better" },
@@ -47,13 +130,6 @@ const MC = {
     { value: "support", label: "Gentle & supportive" },
     { value: "balanced", label: "Balanced" },
     { value: "challenge", label: "Direct — challenge me" },
-  ],
-  emotionalStyle: [
-    { value: "analyze", label: "I analyze / think them through" },
-    { value: "push through", label: "I push through and stay busy" },
-    { value: "numb", label: "I go numb or shut down" },
-    { value: "feel intensely", label: "I feel them intensely" },
-    { value: "unsure", label: "Not sure" },
   ],
 };
 
@@ -105,7 +181,7 @@ Respond with ONLY a JSON object (no prose, no code fences), omitting any field y
   "history": ["<key turning points they shared, e.g. a move, a divorce, a breakup>"],
   "whatHelps": ["<anything that has helped them before, if mentioned>"],
   "presentingConcerns": ["<what's bringing them here, in their words>"],
-  "suspectedPatterns": ["<at most 1-2 gentle, tentative hypotheses — ONLY if grounded in something THEY actually said here; never a stock guess>"],
+  "suspectedPatterns": ["<at most 1-2 gentle, tentative hypotheses — ONLY about something the person talked about IN SOME DETAIL in the conversational sections (multiple sentences of their own words you could quote). A passing mention is not enough; multiple-choice taps are preferences, NOT evidence. When in doubt, return [] — patterns are earned in real sessions, not at the door>"],
   "firstOpener": {
     "blurb": "1-2 warm plain-text sentences to open their FIRST conversation, picking up the most alive thread from this intake (no pressure, gives permission to start anywhere else; NO markdown)",
     "options": ["<=5 words, a tappable starting point grounded in what they shared", "<=5 words, another", "Something else today"]

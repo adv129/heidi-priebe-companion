@@ -650,6 +650,44 @@ input[type="range"]:focus::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--ac
 .chip-btn.explore:hover { background: var(--surface-2); border-color: var(--ink); color: var(--ink); transform: translateY(-1px); }
 .chip-btn:disabled { opacity: 0.5; transform: none; box-shadow: var(--shadow-sm); }
 
+/* ── Fill-in-your-picture exercises (under the opener chips) ─────────────── */
+.exercises { align-self: flex-start; width: 100%; margin-top: 14px; }
+.ex-hint {
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  margin-bottom: 8px;
+}
+.chip-btn.ex {
+  border-style: dashed;
+  border-color: var(--sage);
+  color: var(--sage);
+  background: var(--surface);
+}
+.chip-btn.ex:hover { background: var(--sage-soft); border-color: var(--sage); color: var(--sage); }
+.ex-panel { margin-top: 12px; max-width: 560px; }
+.ex-card { padding: 18px 20px; }
+.ex-card textarea { width: 100%; }
+
+/* Person entry form (onboarding step + Talk exercise) */
+.person-form { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; font-family: var(--font-ui); }
+.person-form textarea { width: 100%; }
+.person-cards { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.person-card {
+  position: relative;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: 10px 34px 10px 14px;
+  font-family: var(--font-ui);
+  font-size: 0.9rem;
+}
+.person-remove {
+  position: absolute; top: 6px; right: 6px;
+  padding: 2px 9px; font-size: 0.9rem;
+  border: none; background: transparent; color: var(--ink-soft);
+}
+.person-remove:hover { color: var(--danger); }
+
 /* ── Natural-end nudge ───────────────────────────────────────────────────── */
 .close-nudge {
   align-self: center;
@@ -728,6 +766,16 @@ input[type="range"]:focus::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--ac
   font-style: normal; vertical-align: middle;
 }
 .mc-group { margin-bottom: 10px; }
+/* The check-in questionnaire: one question per screen */
+.quiz-meta {
+  font-family: var(--font-ui);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-bottom: 4px;
+}
 .other-row { margin-top: 8px; }
 .other-row input { max-width: 360px; }
 .ob-chat {
@@ -867,4 +915,92 @@ input[type="range"]:focus::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--ac
 /* ── Motion / a11y ───────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+}
+
+/* ── Therapist brief ─────────────────────────────────────────────────────── */
+
+.hidden { display: none !important; }
+
+/* Home: preset cards */
+.preset-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 26px; }
+.preset-card { display: block; text-decoration: none; color: var(--ink); transition: box-shadow 0.15s ease, transform 0.15s ease; }
+.preset-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.preset-card h3 { margin: 0 0 6px; }
+.preset-card .mc-chip { display: inline-block; margin-top: 10px; }
+.brief-row { padding: 14px 20px; }
+
+/* Composer */
+.compose-card { padding: 18px 22px; }
+.compose-card.sec-off .b-sec-body { opacity: 0.4; }
+.b-sec-head { gap: 10px; cursor: pointer; align-items: center; }
+.b-sec-head h3 { margin: 0; }
+.b-sec-head input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--accent); flex: none; }
+.b-sec-body { margin-top: 10px; }
+.b-pick { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; border-radius: var(--radius-sm); padding: 4px 6px; }
+.b-pick:hover { background: color-mix(in srgb, var(--surface-2) 55%, transparent); }
+.b-pick input[type="checkbox"] { margin-top: 6px; width: 15px; height: 15px; accent-color: var(--sage); flex: none; }
+.b-pick-body { flex: 1; min-width: 0; }
+.b-pick.off .b-pick-body { opacity: 0.45; text-decoration-color: var(--ink-soft); }
+.b-date-input { font-family: var(--font-ui); font-size: 0.85rem; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-pill); background: var(--surface); color: var(--ink); }
+.brief-actions { display: flex; gap: 10px; align-items: center; margin: 18px 0 30px; flex-wrap: wrap; }
+.b-warn { font-family: var(--font-ui); font-size: 0.88rem; color: var(--danger); }
+.b-ai-note { font-family: var(--font-ui); font-size: 0.84rem; }
+.b-narr { width: 100%; min-height: 120px; resize: vertical; font-family: var(--font-body); font-size: 0.95rem; line-height: 1.6; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px 14px; margin-top: 8px; }
+.b-narr:focus { outline: none; border-color: var(--accent); }
+
+/* The document itself (screen) — a calm paper sheet */
+.brief-doc { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-sm); max-width: 720px; margin: 0 auto 40px; padding: 40px 46px 30px; }
+.brief-head { border-bottom: 1px solid var(--line); padding-bottom: 16px; margin-bottom: 8px; }
+.brief-head h1 { font-size: 1.45rem; margin: 0 0 8px; }
+.b-headline { margin: 0 0 10px; color: var(--ink-soft); font-family: var(--font-ui); font-size: 0.88rem; }
+.b-provenance { margin: 0; font-family: var(--font-ui); font-size: 0.78rem; color: var(--ink-soft); font-style: italic; }
+.brief-section { padding: 14px 0 4px; border-bottom: 1px solid var(--line-soft); }
+.brief-section:last-of-type { border-bottom: none; }
+.brief-section h2 { font-size: 1.08rem; margin: 0 0 10px; }
+.brief-section p { margin: 0 0 8px; line-height: 1.6; }
+.b-group { font-family: var(--font-ui); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-soft); margin: 14px 0 6px; }
+.b-item { padding: 6px 0; }
+.b-item > p { margin: 0 0 3px; }
+.b-kv { margin: 0 0 6px; }
+.b-ul { margin: 0 0 10px 20px; padding: 0; }
+.b-ul li { margin-bottom: 4px; line-height: 1.55; }
+.b-meta { font-family: var(--font-ui); font-size: 0.84rem; color: var(--ink-soft); }
+.b-date { font-family: var(--font-ui); font-size: 0.8rem; color: var(--ink-soft); }
+.b-note { color: var(--ink-soft); }
+.b-framing { font-style: italic; color: var(--ink-soft); font-size: 0.92rem; }
+.b-statement { font-size: 1rem; }
+.b-ev { font-family: var(--font-ui); font-size: 0.84rem; color: var(--ink-soft); margin: 0 0 2px 14px !important; }
+.b-ev-against { color: color-mix(in srgb, var(--danger) 75%, var(--ink-soft)); }
+.b-rev { font-style: italic; }
+.b-ai-label { font-family: var(--font-ui); font-size: 0.76rem; color: var(--ink-soft); font-style: italic; }
+.brief-section.b-flags { border-left: 3px solid var(--accent); padding-left: 16px; margin: 10px 0; }
+.brief-footer { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); font-family: var(--font-ui); font-size: 0.76rem; color: var(--ink-soft); }
+
+/* ── Print: the brief as a clean black-on-white document ─────────────────── */
+@media print {
+  :root, :root[data-theme] {
+    --bg: #fff; --bg-grad: none; --surface: #fff; --surface-2: #f2f2f2;
+    --paper: #fff; --ink: #111; --ink-soft: #444;
+    --line: #bbb; --line-soft: #ddd;
+    --accent: #8a5a3a; --accent-soft: #f2f2f2; --sage: #4a5340; --sage-soft: #f2f2f2;
+    --gold: #6d5a24; --gold-soft: #f2f2f2; --danger: #7a2f24;
+    --shadow-sm: none; --shadow-md: none; --shadow-lg: none;
+  }
+  body { background: #fff !important; color: #111; font-size: 11pt; }
+  #topbar, #nav, #mode-switch, .no-print, .brief-actions { display: none !important; }
+  #app { max-width: none; padding: 0; margin: 0; }
+  .brief-doc { box-shadow: none; border: none; border-radius: 0; max-width: none; margin: 0; padding: 0 0 40px; }
+  .brief-section, .b-item, .b-hyp { break-inside: avoid; }
+  .brief-section h2, .b-group { break-after: avoid; }
+  .brief-head h1 { color: #111; }
+  .tag { background: none !important; color: #333 !important; border: 1px solid #999; opacity: 1 !important; }
+  .bar { border: 1px solid #999; }
+  .bar-fill { background: #666 !important; }
+  .brief-section.b-flags { border-left-color: #8a5a3a; }
+  .brief-footer {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    margin: 0; padding: 6px 0 0; border-top: 1px solid #ccc;
+    font-size: 8pt; color: #555; background: #fff;
+  }
+  @page { margin: 18mm 16mm 22mm; }
 }

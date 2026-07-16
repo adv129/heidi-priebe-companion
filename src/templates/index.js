@@ -11,6 +11,7 @@ const { buildRespondPrompt } = require("./respond");
 const { buildConsolidatePrompt } = require("./consolidate");
 const tone = require("./tone");
 const onboard = require("./onboard");
+const { buildBriefNarrativePrompt } = require("./brief");
 
 module.exports = {
   SYSTEM_PREAMBLE,
@@ -19,6 +20,7 @@ module.exports = {
   buildRoutePrompt,
   buildRespondPrompt,
   buildConsolidatePrompt,
+  buildBriefNarrativePrompt,
   buildToneDirective: tone.buildToneDirective,
   resolveDials: tone.resolveDials,
   DEFAULT_DIALS: tone.DEFAULT_DIALS,

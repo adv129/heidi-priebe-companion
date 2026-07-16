@@ -89,6 +89,7 @@ const ANTHROPIC_KINDS = {
   consolidate:        { model: "claude-opus-4-8", maxTokens: 8192 },
   "onboard-extract":  { model: "claude-opus-4-8", maxTokens: 4096 },
   "onboard-followup": { model: "claude-sonnet-5", maxTokens: 1024 },
+  brief:              { model: "claude-opus-4-8", maxTokens: 2048 },
 };
 const ANTHROPIC_DEFAULT = { model: "claude-sonnet-5", maxTokens: 2048 };
 

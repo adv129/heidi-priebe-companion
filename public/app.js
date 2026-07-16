@@ -83,9 +83,11 @@ function buildChrome() {
   if (!setup) { nav.innerHTML = ""; return; }
   const cur = location.hash.replace("#", "") || "/chat";
   const links = mode === "therapist"
-    ? [["/therapist", "Dashboard"], ["/settings", "Settings"]]
+    ? [["/therapist", "Brief"], ["/therapist/data", "Data"], ["/settings", "Settings"]]
     : [["/chat", "Talk"], ["/journey", "Journey"], ["/settings", "Settings"]];
-  nav.innerHTML = links.map(([h, t]) => `<a href="#${h}" class="${cur === h || cur.startsWith(h + "/") ? "active" : ""}">${t}</a>`).join("");
+  // Longest matching prefix wins, so "/therapist/data" doesn't also light up "/therapist".
+  const best = links.reduce((b, [h]) => ((cur === h || cur.startsWith(h + "/")) && h.length > b.length ? h : b), "");
+  nav.innerHTML = links.map(([h, t]) => `<a href="#${h}" class="${h === best ? "active" : ""}">${t}</a>`).join("");
 }
 
 async function handleRoute() {
@@ -96,7 +98,7 @@ async function handleRoute() {
   if (appConfig.setupComplete && path === "/onboard") { location.hash = "#/chat"; return; }
   buildChrome();
   if (path.startsWith("/journey")) { await renderJourney(path.split("/")[2] || ""); return; }
-  if (path.startsWith("/therapist")) { await renderTherapist(path.split("/")[2] || ""); return; }
+  if (path.startsWith("/therapist")) { await renderTherapist(path.split("/").slice(2)); return; }
   await (routes[path] || renderChat)();
 }
 
@@ -109,45 +111,50 @@ let ob = null;
 
 // Each topic the person can pick maps to a tailored opening question for its
 // conversational section. Custom/unmapped topics get a generic seed.
-// Seeds stay concrete and low-stakes — depth is earned later in real sessions,
-// not demanded at a first meeting.
-const TOPIC_SECTIONS = {
-  "Relationships & dating": { title: "Relationships", seed: "What does your relationship life look like these days?" },
-  "Anxious or avoidant patterns in love": { title: "Patterns in love", seed: "When you get close to someone, what tends to happen — do you reach for them, pull back, or something in between?" },
-  "Family & how I was raised": { title: "Family", seed: "Tell me a little about your family these days — who's around, and how do things feel with them?" },
-  "Feeling flawed, not enough, or ashamed": { title: "Self-worth", seed: "When does that 'not enough' feeling tend to show up for you these days?" },
-  "People-pleasing & losing myself": { title: "People-pleasing", seed: "Where in your life do you find yourself saying yes when you really mean no?" },
-  "Understanding & actually feeling my emotions": { title: "Emotions", seed: "When something big happens, do you tend to feel it in the moment, or does it catch up with you later?" },
-  "A hard childhood / healing old wounds": { title: "Early life", seed: "Only as much as you feel like sharing — is there a part of your earlier life that still feels present today?" },
-  "Grief, a breakup, or letting go": { title: "Loss & letting go", seed: "What are you carrying or trying to let go of right now — in whatever words come easily?" },
-  "Boundaries & codependency": { title: "Boundaries", seed: "Where does taking care of others start to cost you — where does the line get blurry?" },
-  "Being honest with myself / feeling stuck": { title: "Honesty with yourself", seed: "Where in your life does 'stuck' show up the most right now?" },
-  "Personality & self-understanding": { title: "Self-understanding", seed: "How would you describe yourself to someone who's never met you?" },
-  "Anxiety": { title: "Anxiety", seed: "When anxiety shows up for you, what does it tend to circle around?" },
-};
+const MAX_TOPIC_SECTIONS = 2; // cap answer-driven sections to avoid fatigue
 
-const MAX_TOPIC_SECTIONS = 2; // cap topic sections to avoid fatigue
+/** The server's questionnaire (each entry: {id, q, options:[{label, signal, title?, seed?}]}). */
+function obQuizCatalog() {
+  return (obOptions && obOptions.mc && Array.isArray(obOptions.mc.quiz)) ? obOptions.mc.quiz : [];
+}
+
+/** The answers that lit a territory up, strongest first: [{q, label, signal, title, seed}]. */
+function obQuizSignals() {
+  const out = [];
+  for (const q of obQuizCatalog()) {
+    const label = ob.mc.quiz[q.id];
+    if (!label) continue;
+    const opt = q.options.find((o) => o.label === label);
+    if (opt && opt.signal > 0 && opt.title) out.push({ q: q.q, label, signal: opt.signal, title: opt.title, seed: opt.seed });
+  }
+  return out.sort((a, b) => b.signal - a.signal);
+}
 
 // Conversational sections, EASY → DEEPER: start with plain day-to-day life,
-// then their chosen topics, then people, and only at the end the (explicitly
-// optional) why-now question. All skippable at any time.
+// then the questions their questionnaire answers turned into, then people, and
+// only at the end the (explicitly optional) why-now question. All skippable.
 function obSectionDefs() {
-  const picked = (ob.mc.topics || []).filter((t) => t && t !== "Not sure yet");
-  const custom = ob.mc.other && ob.mc.other.topics && ob.mc.other.topics.trim() ? [ob.mc.other.topics.trim()] : [];
-  const topics = [...picked, ...custom].slice(0, MAX_TOPIC_SECTIONS).map((t, i) => {
-    const m = TOPIC_SECTIONS[t];
-    return { id: "t" + i, title: m ? m.title : t, seed: m ? m.seed : `You mentioned "${t}." What's going on there for you?`, maxTurns: 2 };
-  });
+  const seen = new Set();
+  const issueSecs = [];
+  for (const sig of obQuizSignals()) {
+    if (seen.has(sig.title)) continue;
+    seen.add(sig.title);
+    issueSecs.push({ id: "t" + issueSecs.length, title: sig.title, seed: sig.seed, maxTurns: 2 });
+    if (issueSecs.length >= MAX_TOPIC_SECTIONS) break;
+  }
   return [
     { id: "today", title: "Life right now", seed: "Let's start easy. What does day-to-day life look like for you at the moment — work, school, where you're living, that kind of thing?", maxTurns: 2 },
-    ...topics,
-    { id: "people", title: "The people in your life", seed: "Who are the people who matter most to you right now?", maxTurns: 2 },
+    ...issueSecs,
     { id: "why-now", title: "Why now", seed: "Last one — and only if you feel like going there: what made now feel like the moment to start doing this kind of work?", maxTurns: 2 },
   ];
 }
 
 function obSteps() {
-  return ["provider", "consent", "name", "mc1", "mc2", ...obSectionDefs().map((s) => "section:" + s.id), "finish"];
+  // The structured add-your-people step sits between the issue conversations
+  // and the final (optional) why-now question.
+  const secs = obSectionDefs().map((s) => "section:" + s.id);
+  const whyNow = secs.pop();
+  return ["provider", "consent", "name", "quiz", "style", ...secs, "people", whyNow, "finish"];
 }
 
 // Progress chips across the wizard (collapses the chat sections into one stage).
@@ -155,8 +162,8 @@ function obProgressHtml() {
   const stages = [
     ["provider|consent", "Setup"],
     ["name", "Name"],
-    ["mc1|mc2", "Quick taps"],
-    ["section:", "A short chat"],
+    ["quiz|style", "Quick taps"],
+    ["section:|people", "A short chat"],
     ["finish", "Ready"],
   ];
   const cur = obSteps()[ob.i] || "";
@@ -169,7 +176,7 @@ function obProgressHtml() {
 async function renderOnboard() {
   if (!providers) { try { providers = await api("GET", "/api/providers"); } catch { providers = []; } }
   if (!obOptions) { try { obOptions = await api("GET", "/api/onboard/options"); } catch { obOptions = { mc: {}, sections: [] }; } }
-  if (!ob) ob = { i: 0, provider: "claude-p", model: "openai/gpt-4o-mini", consent: false, name: "", mc: { topics: [], readiness: [], tone: "balanced", emotionalStyle: [], other: { topics: "", readiness: "", tone: "", emotionalStyle: "" } }, sec: {} };
+  if (!ob) ob = { i: 0, qi: 0, provider: "claude-p", model: "openai/gpt-4o-mini", consent: false, name: "", mc: { topics: [], quiz: {}, readiness: [], tone: "balanced", emotionalStyle: [], other: { topics: "", readiness: "", tone: "", emotionalStyle: "" } }, sec: {}, people: [] };
 
   const steps = obSteps();
   const cur = steps[ob.i];
@@ -177,8 +184,9 @@ async function renderOnboard() {
   if (cur === "provider") return obProvider();
   if (cur === "consent") return obConsent();
   if (cur === "name") return obName();
-  if (cur === "mc1") return obMC(1);
-  if (cur === "mc2") return obMC(2);
+  if (cur === "quiz") return obQuiz();
+  if (cur === "style") return obStyle();
+  if (cur === "people") return obPeople();
   if (cur.startsWith("section:")) return obSection(cur.slice(8));
   if (cur === "finish") return obFinish();
 }
@@ -244,10 +252,8 @@ function obName() {
 function obGroups() {
   const mc = obOptions.mc || {};
   return [
-    { key: "topics", label: "What's bringing you here? (choose any that fit)", opts: (mc.topics || []).map((t) => ({ value: t, label: t })), multi: true, ranked: false },
     { key: "readiness", label: "What do you most want right now? (tap in order of priority)", opts: mc.readiness || [], multi: true, ranked: true },
     { key: "tone", label: "How should I be with you?", opts: mc.tone || [], multi: false, ranked: false },
-    { key: "emotionalStyle", label: "When a big feeling shows up, what do you tend to do? (choose any)", opts: mc.emotionalStyle || [], multi: true, ranked: false },
   ];
 }
 
@@ -286,16 +292,50 @@ function wireChips(g) {
   }));
 }
 
-function obMC(page) {
-  // Two light pages instead of one wall: (1) what brings you + what you want,
-  // (2) how I should be with you + how feelings tend to go.
-  const all = obGroups();
-  const groups = page === 1 ? all.slice(0, 2) : all.slice(2);
-  const heads = page === 1
-    ? { h1: "A few quick taps", sub: "Just a head start — nothing's binding, and you can skip anything. For \"what you want,\" tap in priority order." }
-    : { h1: "How should this feel?", sub: "You can change all of this later, anytime." };
-  const inner = `<h1>${heads.h1}</h1>
-    <p class="sub">${heads.sub}</p>
+// The check-in questionnaire: one broad, easy question per screen, one tap per
+// answer, auto-advancing. The answers quietly decide what we talk about next.
+function obQuiz() {
+  const quiz = obQuizCatalog();
+  if (ob.qi == null) ob.qi = 0;
+  if (!quiz.length || ob.qi >= quiz.length) {
+    ob.qi = null;
+    ob.i++;
+    renderOnboard();
+    return;
+  }
+  const q = quiz[ob.qi];
+  const chosen = ob.mc.quiz[q.id];
+  const inner = `<div class="quiz-meta">A quick check-in · ${ob.qi + 1} of ${quiz.length}</div>
+    <h1 style="font-size:clamp(1.5rem, 4vw, 2.1rem)">${esc(q.q)}</h1>
+    <p class="sub">One tap — whatever's closest. There are no wrong answers.</p>
+    ${q.options.map((o) => `<div class="choice ${chosen === o.label ? "sel" : ""}" data-opt="${esc(o.label)}"><div class="t">${esc(o.label)}</div></div>`).join("")}
+    <div class="row spread" style="margin-top:20px">
+      <button id="quiz-back">Back</button>
+      <button id="quiz-skip">Skip this one</button>
+    </div>`;
+  app.innerHTML = `<div class="ob-wrap">${obProgressHtml()}${inner}</div>`;
+  app.querySelectorAll("[data-opt]").forEach((el) => el.addEventListener("click", () => {
+    ob.mc.quiz[q.id] = el.dataset.opt;
+    app.querySelectorAll("[data-opt]").forEach((x) => x.classList.remove("sel"));
+    el.classList.add("sel");
+    setTimeout(() => { ob.qi++; obQuiz(); }, 180); // brief beat so the tap lands visibly
+  }));
+  document.getElementById("quiz-skip").addEventListener("click", () => {
+    delete ob.mc.quiz[q.id];
+    ob.qi++;
+    obQuiz();
+  });
+  document.getElementById("quiz-back").addEventListener("click", () => {
+    if (ob.qi > 0) { ob.qi--; obQuiz(); }
+    else { ob.qi = 0; ob.i = Math.max(0, ob.i - 1); renderOnboard(); }
+  });
+}
+
+// The two style questions: what they want (in priority order) and tone.
+function obStyle() {
+  const groups = obGroups();
+  const inner = `<h1>How should this feel?</h1>
+    <p class="sub">For "what you want," tap in priority order. You can change all of this later, anytime.</p>
     ${groups.map((g) => `
       <div class="mc-group">
         <label>${g.label}</label>
@@ -313,6 +353,63 @@ function obMC(page) {
       const chip = app.querySelector(`[data-chips="${g.key}"] [data-val="__other__"]`);
       if (chip) chip.classList.toggle("sel", !!oi.value.trim());
     });
+  });
+}
+
+// Shared person-entry form (used by onboarding and the Talk-screen exercise).
+// Renders into `box`; calls onAdd(person) for each added person.
+function personForm(box, people, onChange) {
+  const draw = () => {
+    box.innerHTML = `
+      ${people.length ? `<div class="person-cards">${people.map((p, i) => `
+        <div class="person-card">
+          <strong>${esc(p.name)}</strong>${p.relationship ? ` <span class="muted">· ${esc(p.relationship)}</span>` : ""}${p.workingOn ? ` <span class="tag status-testing">working on it</span>` : ""}
+          ${p.notes ? `<div class="muted" style="font-size:0.85rem">${esc(p.notes)}</div>` : ""}
+          <button class="person-remove" data-rm="${i}" title="Remove">×</button>
+        </div>`).join("")}</div>` : ""}
+      <div class="person-form">
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <input type="text" id="pf-name" placeholder="Name" style="flex:1;min-width:120px" />
+          <input type="text" id="pf-rel" placeholder="Who they are to you (mom, partner, best friend…)" style="flex:2;min-width:180px" />
+        </div>
+        <textarea id="pf-notes" rows="2" placeholder="How are they showing up in your life right now?"></textarea>
+        <label class="row" style="cursor:pointer;font-family:var(--font-ui);font-size:0.86rem;gap:8px">
+          <input type="checkbox" id="pf-working" style="width:auto" /> This is a relationship I'm working on
+        </label>
+        <button id="pf-add">Add ${people.length ? "another" : "them"}</button>
+      </div>`;
+    box.querySelector("#pf-add").addEventListener("click", () => {
+      const name = box.querySelector("#pf-name").value.trim();
+      if (!name) { box.querySelector("#pf-name").focus(); return; }
+      people.push({
+        name,
+        relationship: box.querySelector("#pf-rel").value.trim(),
+        notes: box.querySelector("#pf-notes").value.trim(),
+        workingOn: box.querySelector("#pf-working").checked,
+      });
+      if (onChange) onChange();
+      draw();
+      setTimeout(() => box.querySelector("#pf-name")?.focus(), 0);
+    });
+    box.querySelectorAll("[data-rm]").forEach((b) => b.addEventListener("click", () => {
+      people.splice(Number(b.dataset.rm), 1);
+      if (onChange) onChange();
+      draw();
+    }));
+  };
+  draw();
+}
+
+// Structured "people in your life" step — add real people instead of being
+// asked to describe your relational world in the abstract.
+function obPeople() {
+  const inner = `<h1>The people in your life</h1>
+    <p class="sub">Add whoever matters — family, partner, friends, even someone complicated. A name and a line is plenty, and you can skip this entirely.</p>
+    <div id="ob-people"></div>`;
+  obShell(inner, { nextLabel: ob.people.length ? "Next" : "Skip for now", onNext: () => { ob.i++; renderOnboard(); } });
+  personForm(document.getElementById("ob-people"), ob.people, () => {
+    const n = app.querySelector("#ob-next");
+    if (n) n.textContent = ob.people.length ? "Next" : "Skip for now";
   });
 }
 
@@ -394,8 +491,12 @@ async function obFinish() {
   app.innerHTML = `<div class="ob-wrap center" style="padding-top:60px"><h1>Getting things ready…</h1><p class="muted spin">setting up your space</p></div>`;
   const o = ob.mc.other || {};
   const withOther = (arr, extra) => [...arr, ...(extra && extra.trim() ? [extra.trim()] : [])];
+  const quiz = obQuizCatalog();
   const mergedMc = {
-    topics: withOther(ob.mc.topics, o.topics),
+    // The check-in answers that lit something up (used for gating + concerns)…
+    topics: obQuizSignals().map((s) => `${s.q} → ${s.label}`),
+    // …and the full answer set for the extraction's context.
+    quizAnswers: quiz.map((q) => ob.mc.quiz[q.id] ? { q: q.q, a: ob.mc.quiz[q.id] } : null).filter(Boolean),
     readiness: withOther(ob.mc.readiness, o.readiness), // ordered = priority
     tone: (o.tone && o.tone.trim()) ? o.tone.trim() : (ob.mc.tone || "balanced"),
     emotionalStyle: withOther(ob.mc.emotionalStyle, o.emotionalStyle),
@@ -409,6 +510,7 @@ async function obFinish() {
     });
     await api("POST", "/api/onboard/finish", {
       mc: mergedMc,
+      people: ob.people,
       // The sections the person ACTUALLY chatted through (obSectionDefs), not the
       // server's static list — this used to send an empty transcript to extraction.
       sections: obSectionDefs().map((s) => ({ id: s.id, title: s.title, messages: (ob.sec[s.id] && ob.sec[s.id].messages) || [] })),
@@ -507,6 +609,7 @@ async function renderChat() {
     ];
     if (opener.canExplore) chips.push({ label: "Get to know me better →", cls: "explore", onClick: startExplore });
     if (chips.length) renderChips(scroll, chips, input);
+    if (opener.exercises && opener.exercises.length) renderExercises(scroll, opener.exercises);
   }
   scrollDown();
   setFocus(focusOn);
@@ -520,6 +623,7 @@ async function renderChat() {
     // Immediate feedback: the explore opener is a real model call and can take
     // a while — switch the lens, drop the chips, and show a typing bubble now.
     app.querySelector("#chips")?.remove();
+    app.querySelector("#exercises")?.remove();
     app.querySelector("#explore-nudge")?.remove();
     exploring = true;
     setModeLens(null, false);
@@ -560,6 +664,7 @@ async function renderChat() {
     if (!msg) return;
     input.value = ""; autoGrow(input);
     app.querySelector("#chips")?.remove();
+    app.querySelector("#exercises")?.remove();
     addBubble(scroll, "user", msg);
     const typing = addBubble(scroll, "assistant", ""); typing.classList.add("loading");
     typing.appendChild(scrollLoader());
@@ -795,6 +900,64 @@ function renderChips(scroll, options, input) {
     div.appendChild(b);
   });
   scroll.appendChild(div);
+}
+
+// Fill-in-your-picture exercises under the opener chips: light, optional ways
+// to add the depth onboarding deliberately skips (people, goals).
+function renderExercises(scroll, list) {
+  const wrap = document.createElement("div");
+  wrap.id = "exercises";
+  wrap.className = "exercises";
+  wrap.innerHTML = `<div class="ex-hint">While you're here — a little goes a long way:</div>
+    <div class="chips" style="margin-top:0">${list.map((e) => `<button class="chip-btn ex" data-ex="${esc(e.kind)}">${esc(e.label)}</button>`).join("")}</div>
+    <div class="ex-panel" style="display:none"></div>`;
+  scroll.appendChild(wrap);
+  const panel = wrap.querySelector(".ex-panel");
+
+  const done = (btn, msg) => {
+    panel.innerHTML = `<div class="card ex-card"><p style="margin:0">${esc(msg)}</p></div>`;
+    btn.remove();
+    setTimeout(() => { panel.style.display = "none"; panel.innerHTML = ""; }, 2600);
+  };
+
+  wrap.querySelectorAll("[data-ex]").forEach((btn) => btn.addEventListener("click", () => {
+    panel.style.display = "block";
+    if (btn.dataset.ex === "people") {
+      const people = [];
+      panel.innerHTML = `<div class="card ex-card">
+        <h3 style="margin:0 0 4px">The people in your life</h3>
+        <p class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.84rem;margin:0 0 10px">A name and a line is plenty — I'll hold the rest as we talk.</p>
+        <div class="ex-people"></div>
+        <div class="row" style="gap:8px;margin-top:10px"><button class="primary" data-save>Save</button><button data-close>Close</button></div>
+      </div>`;
+      personForm(panel.querySelector(".ex-people"), people, null);
+      panel.querySelector("[data-save]").addEventListener("click", async () => {
+        if (!people.length) { panel.querySelector("#pf-name")?.focus(); return; }
+        try {
+          await api("POST", "/api/profile/add", { people });
+          done(btn, `Got it — ${people.length === 1 ? people[0].name + " is" : people.length + " people are"} part of the picture now.`);
+        } catch (e) { alert("Couldn't save: " + e.message); }
+      });
+      panel.querySelector("[data-close]").addEventListener("click", () => { panel.style.display = "none"; panel.innerHTML = ""; });
+    } else if (btn.dataset.ex === "goal") {
+      panel.innerHTML = `<div class="card ex-card">
+        <h3 style="margin:0 0 4px">Something you're working toward</h3>
+        <p class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.84rem;margin:0 0 10px">In your own words — big or small. We'll track how it moves over time.</p>
+        <textarea class="ex-goal" rows="2" placeholder="e.g. stop disappearing in relationships, actually rest on weekends…"></textarea>
+        <div class="row" style="gap:8px;margin-top:10px"><button class="primary" data-save>Save</button><button data-close>Close</button></div>
+      </div>`;
+      panel.querySelector("[data-save]").addEventListener("click", async () => {
+        const text = panel.querySelector(".ex-goal").value.trim();
+        if (!text) { panel.querySelector(".ex-goal").focus(); return; }
+        try {
+          await api("POST", "/api/profile/add", { goals: [text] });
+          done(btn, "Saved — you'll find it under Journey → Goals, and we can work on it any time.");
+        } catch (e) { alert("Couldn't save: " + e.message); }
+      });
+      panel.querySelector("[data-close]").addEventListener("click", () => { panel.style.display = "none"; panel.innerHTML = ""; });
+      setTimeout(() => panel.querySelector(".ex-goal")?.focus(), 0);
+    }
+  }));
 }
 
 function setLens(text, isSafety, isExplore) {
@@ -1216,17 +1379,499 @@ async function renderSettings() {
 
 // ─── Therapist dashboard (viz + insights, no LLM) ──────────────────────────────
 
-const THERAPIST_SECTIONS = [
-  ["network", "Network"],
-  ["lenses", "Lenses"],
-  ["signals", "Signals"],
-  ["timeline", "Timeline"],
-];
+// ─── Therapist mode: the brief ─────────────────────────────────────────────────
+//
+// Therapist mode is built around one artifact: a BRIEF the person composes and
+// SENDS to their real-world therapist. #/therapist = home (presets + past
+// briefs) → compose/<preset> (window + section/item toggles → narrative review)
+// → view/<id> (print-ready page). #/therapist/data keeps the network/lens
+// visualizations as an on-screen exploration (they don't print).
 
-async function renderTherapist(section) {
-  const sec = THERAPIST_SECTIONS.some(([k]) => k === section) ? section : "network";
-  app.innerHTML = `<h1>Therapist view</h1>
-    <p class="sub">A read-only lens on the referential network and what it reveals. Local, single-user — no clinical claims.</p>
+const PRESET_META = {
+  "first-meeting": {
+    name: "First meeting intro",
+    desc: "Introduce yourself before therapy starts: who you are, the people in your life, patterns you've been noticing together, goals, and what helps.",
+  },
+  "pre-session": {
+    name: "Pre-session update",
+    desc: "Catch your therapist up on a chosen window: sessions, pattern movement, goals, experiments, and life events since they last heard from you.",
+  },
+};
+
+// Transient composer state — privacy choices are made fresh for every brief,
+// never silently inherited from the last one.
+let bc = null;
+
+async function renderTherapist(parts = []) {
+  const [sec, arg] = Array.isArray(parts) ? parts : [parts];
+  if (sec === "compose" && PRESET_META[arg]) return renderBriefComposer(arg);
+  if (sec === "view" && arg) return renderBriefView(arg);
+  if (sec === "data") return renderTherapistData(arg || "network");
+  return renderBriefHome();
+}
+
+// ── Home: presets + past briefs ──
+
+async function renderBriefHome() {
+  bc = null;
+  app.innerHTML = `<h1>Therapist brief</h1>
+    <p class="sub">Compose a document to send to your therapist — you choose exactly what's shared, review every word, then print or save as a PDF.</p>
+    <div id="bhome"></div>`;
+  const box = app.querySelector("#bhome");
+  let data;
+  try { data = await api("GET", "/api/briefs"); } catch (e) { box.innerHTML = `<p class="muted">Couldn't load: ${esc(e.message)}</p>`; return; }
+
+  box.innerHTML = `
+    <div class="preset-row">
+      ${Object.entries(PRESET_META).map(([k, m]) => `
+        <a class="card preset-card" href="#/therapist/compose/${k}">
+          <h3>${esc(m.name)}</h3>
+          <p class="muted">${esc(m.desc)}</p>
+          <span class="mc-chip sel">Compose →</span>
+        </a>`).join("")}
+    </div>
+    <h2>Past briefs</h2>
+    <div id="blist">${data.briefs.length ? "" : `<p class="muted">Nothing yet. Saved briefs stay here so you can reopen and reprint exactly what you sent.</p>`}</div>`;
+
+  const list = box.querySelector("#blist");
+  for (const b of data.briefs) {
+    const el = document.createElement("div");
+    el.className = "card brief-row";
+    el.innerHTML = `<div class="row spread">
+        <div><strong>${esc(PRESET_META[b.preset] ? PRESET_META[b.preset].name : b.preset)}</strong>
+          <span class="muted"> · ${esc(String(b.at).slice(0, 10))}${b.windowStart ? ` · covering since ${esc(b.windowStart)}` : ""}</span></div>
+        <div class="row" style="gap:8px">
+          <a class="mc-chip" href="#/therapist/view/${esc(b.id)}">Open</a>
+          <button class="mc-chip b-del" title="Delete this saved brief">✕</button>
+        </div></div>`;
+    el.querySelector(".b-del").addEventListener("click", async () => {
+      if (!confirm("Delete this saved brief? The data it was built from stays in your memory.")) return;
+      try { await api("DELETE", "/api/brief/" + b.id); renderBriefHome(); } catch (e) { alert(e.message); }
+    });
+    list.appendChild(el);
+  }
+}
+
+// ── Composer ──
+
+async function renderBriefComposer(preset) {
+  const meta = PRESET_META[preset];
+  bc = { preset, windowStart: null, winChoice: null, composed: null, on: {}, excluded: {}, narrative: null, narrativeEdited: false, stage: "compose" };
+  app.innerHTML = `<h1>${esc(meta.name)}</h1>
+    <p class="sub">Untick anything you'd rather keep private — only what's ticked reaches the document and the narrative.</p>
+    <div id="bwin"></div>
+    <div id="bcomp"><p class="muted">Composing…</p></div>
+    <div id="bact" class="brief-actions"></div>`;
+
+  if (preset === "pre-session") {
+    let home; try { home = await api("GET", "/api/briefs"); } catch { home = {}; }
+    renderWindowPicker(home.defaultWindow || {}); // sets bc.windowStart to the default choice
+  }
+  await loadBriefPreview();
+}
+
+function localDateStr(daysAgo) {
+  const t = new Date();
+  t.setDate(t.getDate() - daysAgo);
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+}
+
+function renderWindowPicker(dw) {
+  const box = app.querySelector("#bwin");
+  const choices = [];
+  if (dw.source === "last-brief") choices.push({ id: "last", label: `Since your last brief (${dw.windowStart})`, ws: dw.windowStart });
+  choices.push({ id: "2w", label: "Last 2 weeks", ws: localDateStr(14) });
+  choices.push({ id: "1m", label: "Last month", ws: localDateStr(30) });
+  bc.winChoice = choices[0].id;
+  bc.windowStart = choices[0].ws;
+
+  const draw = () => {
+    box.innerHTML = `<div class="card compose-card"><h3 style="margin-top:0">Covering what period?</h3>
+      <div class="journey-pills" style="margin:0">
+        ${choices.map((c) => `<span class="mc-chip ${bc.winChoice === c.id ? "sel" : ""}" data-w="${c.id}">${esc(c.label)}</span>`).join("")}
+        <span class="mc-chip ${bc.winChoice === "custom" ? "sel" : ""}" data-w="custom">Custom…</span>
+        <input type="date" id="bdate" class="b-date-input ${bc.winChoice === "custom" ? "" : "hidden"}" value="${esc(bc.winChoice === "custom" ? (bc.windowStart || "") : "")}" max="${localDateStr(0)}">
+      </div></div>`;
+    box.querySelectorAll("[data-w]").forEach((el) => el.addEventListener("click", async () => {
+      bc.winChoice = el.dataset.w;
+      if (el.dataset.w === "custom") { draw(); box.querySelector("#bdate").focus(); return; }
+      bc.windowStart = choices.find((c) => c.id === el.dataset.w).ws;
+      draw();
+      await loadBriefPreview();
+    }));
+    const di = box.querySelector("#bdate");
+    di.addEventListener("change", async () => {
+      if (!di.value) return;
+      bc.windowStart = di.value;
+      await loadBriefPreview();
+    });
+  };
+  draw();
+}
+
+async function loadBriefPreview() {
+  const box = app.querySelector("#bcomp");
+  box.innerHTML = `<p class="muted">Composing…</p>`;
+  try {
+    bc.composed = await api("POST", "/api/brief/preview", { preset: bc.preset, windowStart: bc.windowStart });
+  } catch (e) { box.innerHTML = `<p class="muted">Couldn't compose: ${esc(e.message)}</p>`; return; }
+  bc.on = {}; bc.excluded = {};
+  for (const s of bc.composed.sections) bc.on[s.key] = !!(s.defaultOn || s.alwaysOn);
+  drawComposer();
+  drawComposerActions();
+}
+
+function sectionParts(sec) { return briefSectionParts(sec) || {}; }
+function sectionEmpty(parts) { return !parts.intro && !parts.outro && (!parts.items || !parts.items.length); }
+
+function drawComposer() {
+  bc.stage = "compose";
+  const win = app.querySelector("#bwin");
+  if (win) win.classList.remove("hidden");
+  const box = app.querySelector("#bcomp");
+
+  box.innerHTML = bc.composed.sections.map((sec) => {
+    const parts = sectionParts(sec);
+    const empty = sectionEmpty(parts);
+    if (empty) bc.on[sec.key] = false;
+    const ex = new Set((bc.excluded[sec.key] || []).map(String));
+
+    let itemsHtml = "";
+    if (parts.items) {
+      let lastGroup = null;
+      for (const it of parts.items) {
+        if (it.group && it.group !== lastGroup) { itemsHtml += `<h4 class="b-group">${esc(it.group)}</h4>`; lastGroup = it.group; }
+        const off = ex.has(String(it.id));
+        itemsHtml += `<label class="b-pick ${off ? "off" : ""}">
+          <input type="checkbox" data-sec="${esc(sec.key)}" data-id="${esc(it.id)}" ${off ? "" : "checked"}>
+          <div class="b-pick-body">${it.html}</div></label>`;
+      }
+    }
+
+    return `<div class="card compose-card ${bc.on[sec.key] ? "" : "sec-off"}" data-card="${esc(sec.key)}">
+      <label class="row b-sec-head">
+        <input type="checkbox" data-secon="${esc(sec.key)}" ${bc.on[sec.key] ? "checked" : ""} ${sec.alwaysOn || empty ? "disabled" : ""}>
+        <h3>${esc(sec.title)}</h3>
+      </label>
+      ${empty
+        ? `<p class="muted">(nothing ${bc.preset === "pre-session" ? "in this period" : "here yet"})</p>`
+        : `<div class="b-sec-body">${parts.intro || ""}${itemsHtml}${parts.outro || ""}</div>`}
+    </div>`;
+  }).join("");
+
+  box.querySelectorAll("[data-secon]").forEach((el) => el.addEventListener("change", () => {
+    bc.on[el.dataset.secon] = el.checked;
+    el.closest(".compose-card").classList.toggle("sec-off", !el.checked);
+  }));
+  box.querySelectorAll("[data-sec][data-id]").forEach((el) => el.addEventListener("change", () => {
+    const key = el.dataset.sec, id = String(el.dataset.id);
+    const list = (bc.excluded[key] || []).filter((x) => String(x) !== id);
+    if (!el.checked) list.push(id);
+    bc.excluded[key] = list;
+    el.closest(".b-pick").classList.toggle("off", !el.checked);
+  }));
+}
+
+function drawComposerActions() {
+  const act = app.querySelector("#bact");
+  act.innerHTML = `
+    <button class="mc-chip sel" id="bgen">Generate narrative →</button>
+    <button class="mc-chip" id="bskip">Continue without narrative</button>`;
+  act.querySelector("#bgen").addEventListener("click", () => generateNarrativeAndReview());
+  act.querySelector("#bskip").addEventListener("click", () => { bc.narrative = null; bc.narrativeEdited = false; drawReview(false); });
+}
+
+function briefSelection() {
+  return {
+    preset: bc.preset,
+    windowStart: bc.windowStart,
+    sections: bc.composed.sections.filter((s) => bc.on[s.key]).map((s) => s.key),
+    excluded: bc.excluded,
+  };
+}
+
+async function generateNarrativeAndReview(regen) {
+  const btn = app.querySelector(regen ? "#bregen" : "#bgen");
+  if (btn) { btn.textContent = "Writing…"; btn.disabled = true; }
+  try {
+    const r = await api("POST", "/api/brief/narrative", briefSelection());
+    bc.narrative = r.narrative;
+    bc.narrativeEdited = false;
+    drawReview(false);
+  } catch (e) {
+    if (regen) {
+      alert("Couldn't regenerate: " + e.message);
+      if (btn) { btn.textContent = "Regenerate"; btn.disabled = false; }
+    } else {
+      drawReview(true);
+    }
+  }
+}
+
+/** The composed data, filtered by the CURRENT toggles — mirror of the server's exclusion filter, for the WYSIWYG preview. */
+function briefClientFiltered() {
+  const drop = (key, arr) => (arr || []).filter((it) => !(bc.excluded[key] || []).map(String).includes(String(it.id)));
+  const sections = bc.composed.sections.filter((s) => bc.on[s.key]).map((s) => {
+    const c = JSON.parse(JSON.stringify(s));
+    if (c.items) c.items = drop(c.key, c.items);
+    if (c.goals) c.goals = drop(c.key, c.goals);
+    if (c.people) c.people = drop(c.key, c.people);
+    if (c.weeks) c.weeks = c.weeks.map((w) => ({ ...w, items: drop(c.key, w.items) })).filter((w) => w.items.length);
+    if (c.occurred) c.occurred = drop(c.key, c.occurred);
+    if (c.horizon) c.horizon = drop(c.key, c.horizon);
+    return c;
+  });
+  return { ...bc.composed, sections };
+}
+
+function drawReview(genFailed) {
+  bc.stage = "review";
+  const win = app.querySelector("#bwin");
+  if (win) win.classList.add("hidden");
+  app.querySelector("#bact").innerHTML = "";
+  const box = app.querySelector("#bcomp");
+
+  box.innerHTML = `
+    <div class="card compose-card">
+      <div class="row spread" style="align-items:center">
+        <h3 style="margin:0">Opening narrative</h3>
+        <button class="mc-chip" id="beditsel">← Edit selection</button>
+      </div>
+      ${genFailed
+        ? `<p class="b-warn">Couldn't generate the narrative — you can write one yourself below, or save without it.</p>`
+        : `<p class="muted b-ai-note">AI-composed from exactly what you ticked. Edit freely — nothing goes to your therapist unseen.</p>`}
+      <textarea id="bnarr" class="b-narr" placeholder="(no narrative — write your own here, or leave empty)">${esc(bc.narrative || "")}</textarea>
+      <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+        <button class="mc-chip" id="bregen">Regenerate</button>
+        <button class="mc-chip" id="bremove">Remove narrative</button>
+        <span style="flex:1"></span>
+        <button class="mc-chip sel" id="bsave">Save &amp; open print view</button>
+      </div>
+    </div>
+    <h2 style="margin-top:24px">How it will read</h2>
+    <p class="sub">The narrative above will open the document; these sections follow.</p>
+    ${briefDocHtml(briefClientFiltered(), null)}`;
+
+  const ta = box.querySelector("#bnarr");
+  const size = () => { ta.style.height = "auto"; ta.style.height = Math.max(120, ta.scrollHeight) + "px"; };
+  size();
+  ta.addEventListener("input", () => { bc.narrative = ta.value; bc.narrativeEdited = true; size(); });
+
+  box.querySelector("#beditsel").addEventListener("click", () => { drawComposer(); drawComposerActions(); });
+  box.querySelector("#bregen").addEventListener("click", () => {
+    if (bc.narrativeEdited && !confirm("Regenerating replaces your edits. Continue?")) return;
+    generateNarrativeAndReview(true);
+  });
+  box.querySelector("#bremove").addEventListener("click", () => {
+    bc.narrative = null; bc.narrativeEdited = false; ta.value = ""; size();
+  });
+  box.querySelector("#bsave").addEventListener("click", async () => {
+    const btn = box.querySelector("#bsave");
+    btn.textContent = "Saving…"; btn.disabled = true;
+    const narrative = (ta.value || "").trim() || null;
+    try {
+      const r = await api("POST", "/api/brief", { ...briefSelection(), narrative, narrativeEdited: bc.narrativeEdited });
+      bc = null;
+      location.hash = "#/therapist/view/" + r.id;
+    } catch (e) {
+      alert("Couldn't save: " + e.message);
+      btn.textContent = "Save & open print view"; btn.disabled = false;
+    }
+  });
+}
+
+// ── Print view (saved snapshot) ──
+
+async function renderBriefView(id) {
+  app.innerHTML = `<div class="brief-actions no-print">
+      <a class="mc-chip" href="#/therapist">← Briefs</a>
+      <span style="flex:1"></span>
+      <button class="mc-chip sel" id="bprint">Print / Save as PDF</button>
+    </div>
+    <div id="bdoc"><p class="muted">Loading…</p></div>`;
+  let b;
+  try { b = await api("GET", "/api/brief/" + id); } catch (e) { app.querySelector("#bdoc").innerHTML = `<p class="muted">${esc(e.message)}</p>`; return; }
+  app.querySelector("#bdoc").innerHTML = briefDocHtml(b.data, b.narrative);
+  document.getElementById("bprint").addEventListener("click", () => window.print());
+}
+
+// ── Shared document renderer (composer preview AND print view — WYSIWYG) ──
+
+function briefDocHtml(data, narrative) {
+  if (!data) return `<p class="muted">Nothing to show.</p>`;
+  const secs = (data.sections || []).map((sec) => {
+    const parts = sectionParts(sec);
+    if (sectionEmpty(parts)) return "";
+    let items = "";
+    if (parts.items) {
+      let lastGroup = null;
+      for (const it of parts.items) {
+        if (it.group && it.group !== lastGroup) { items += `<h4 class="b-group">${esc(it.group)}</h4>`; lastGroup = it.group; }
+        items += it.html;
+      }
+    }
+    return `<section class="brief-section${sec.key === "flags" ? " b-flags" : ""}">
+      <h2>${esc(sec.title)}</h2>${parts.intro || ""}${items}${parts.outro || ""}</section>`;
+  }).join("");
+
+  const narrHtml = narrative
+    ? `<section class="brief-section b-opening">
+        <h2>${data.preset === "pre-session" ? "What's moved" : "Opening picture"}</h2>
+        <p class="b-ai-label">AI-composed from self-report; reviewed by the client.</p>
+        ${esc(narrative).split(/\n+/).filter((p) => p.trim()).map((p) => `<p>${p}</p>`).join("")}
+      </section>`
+    : "";
+
+  return `<article class="brief-doc">
+    <header class="brief-head">
+      <h1>${esc(data.header.title)}</h1>
+      <p class="b-headline">${esc(data.header.clientName)}${data.header.clientName ? " · " : ""}${esc(data.header.prepared)}${data.header.windowLine ? `<br>${esc(data.header.windowLine)}` : ""}</p>
+      <p class="b-provenance">${esc(data.provenance)}</p>
+    </header>
+    ${narrHtml}
+    ${secs}
+    <footer class="brief-footer">${esc(data.footer)}</footer>
+  </article>`;
+}
+
+function hypItemHtml(h) {
+  const meta = [h.status, `${h.confidence} confidence`, h.sinceRel ? `noticed ${h.sinceRel}` : ""].filter(Boolean).join(" · ");
+  const votes = h.votes
+    ? [h.votes.up ? `client endorsed ×${h.votes.up}` : "", h.votes.down ? `client rejected ×${h.votes.down}` : ""].filter(Boolean).join(", ")
+    : "";
+  return `<div class="b-item b-hyp">
+    <p class="b-statement">“${esc(h.statement)}”${h.change ? ` <span class="tag">${esc(h.change)}</span>` : ""}</p>
+    <p class="b-meta">${esc(meta)}${votes ? ` · ${esc(votes)}` : ""}</p>
+    ${(h.evidenceFor || []).map((e) => `<p class="b-ev">supporting: ${esc(e.note)} <span class="b-date">(${esc(e.date)})</span></p>`).join("")}
+    ${(h.evidenceAgainst || []).map((e) => `<p class="b-ev b-ev-against">counter: ${esc(e.note)} <span class="b-date">(${esc(e.date)})</span></p>`).join("")}
+    ${h.revisionNote ? `<p class="b-ev b-rev">${esc(h.revisionNote)}</p>` : ""}
+  </div>`;
+}
+
+/**
+ * Per-section render parts: { intro, items:[{id, html, group?}], outro }.
+ * Used identically by the composer (items get checkboxes) and the document.
+ */
+function briefSectionParts(sec) {
+  const P = (t, cls) => (t ? `<p${cls ? ` class="${cls}"` : ""}>${esc(t)}</p>` : "");
+  const UL = (arr) => (arr && arr.length ? `<ul class="b-ul">${arr.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>` : "");
+
+  switch (sec.key) {
+    case "snapshot": {
+      const kv = [
+        ["How I handle feelings", sec.emotionalStyle],
+        ["My relational world", sec.relationalContext],
+        ["What I want from this work", sec.readiness],
+        ["What matters to me", (sec.values || []).join(", ")],
+      ].filter(([, v]) => v);
+      return { intro: P(sec.lifeContext) + kv.map(([k, v]) => `<p class="b-kv"><strong>${esc(k)}:</strong> ${esc(v)}</p>`).join("") };
+    }
+    case "concerns-goals":
+      return {
+        intro: sec.concerns && sec.concerns.length ? `<p class="b-kv"><strong>What brings me in:</strong></p>${UL(sec.concerns)}` : "",
+        items: (sec.goals || []).map((g) => ({
+          id: g.id,
+          html: `<div class="b-item"><p><strong>${esc(g.text)}</strong> <span class="tag">${esc(g.statusWord)}</span></p>${g.movement ? `<p class="b-meta">${esc(g.movement)}</p>` : ""}</div>`,
+        })),
+      };
+    case "people":
+      return {
+        items: (sec.people || []).map((x) => ({
+          id: x.id,
+          html: `<div class="b-item"><p><strong>${esc(x.name)}</strong>${x.relationship ? ` — ${esc(x.relationship)}` : ""}${x.workingOn ? ` <em class="b-note">a relationship I'm working on</em>` : ""}</p>${x.notes ? `<p class="b-meta">${esc(x.notes)}</p>` : ""}</div>`,
+        })),
+      };
+    case "history":
+      return { items: (sec.items || []).map((it) => ({ id: it.id, html: `<div class="b-item"><p>${esc(it.text)}</p></div>` })) };
+    case "patterns":
+      return {
+        intro: sec.items && sec.items.length ? P(sec.framing, "b-framing") : "",
+        items: (sec.items || []).map((h) => ({ id: h.id, html: hypItemHtml(h) })),
+      };
+    case "whathelps":
+      return {
+        intro: UL(sec.items),
+        outro: (sec.learned || []).map((e) =>
+          `<div class="b-item"><p>Tried <strong>${esc(e.replacement)}</strong> instead of “${esc(e.pattern)}” — learned: ${esc(e.summary)} <span class="tag">${esc(e.keeping)}</span></p></div>`).join(""),
+      };
+    case "flags":
+      return {
+        intro: P(sec.note, "b-meta"),
+        items: (sec.items || []).map((it) => ({
+          id: it.id,
+          html: `<div class="b-item"><p>${it.kind === "childhood" ? `<em>Childhood context I volunteered:</em> ` : ""}${esc(it.text)}</p></div>`,
+        })),
+      };
+    case "engagement": {
+      const bits = [`${sec.sessionCount} session${sec.sessionCount === 1 ? "" : "s"}`];
+      if (sec.firstAt) bits.push(`between ${sec.firstAt} and ${sec.lastAt}`);
+      if (sec.cadence) bits.push(sec.cadence);
+      const max = Math.max(1, ...(sec.themes || []).map((t) => t.count));
+      return {
+        intro: P(bits.join(", ") + "."),
+        outro: (sec.themes || []).map((t) =>
+          `<div class="bar-row"><span class="bar-label">${esc(t.name)}</span><span class="bar"><span class="bar-fill" style="width:${(t.count / max) * 100}%"></span></span><span class="bar-n">${t.count}</span></div>`).join(""),
+      };
+    }
+    case "window-summary":
+      return { intro: P(sec.line) };
+    case "sessions": {
+      const items = [];
+      for (const wk of sec.weeks || []) {
+        for (const s of wk.items) items.push({
+          id: s.id,
+          group: wk.label,
+          html: `<div class="b-item"><p><strong>${esc(s.title)}</strong> <span class="b-date">${esc(s.date)}</span>${s.mode === "explore" ? ` <span class="tag">explore</span>` : ""}</p>${s.summary ? `<p class="b-meta">${esc(s.summary)}</p>` : ""}${UL(s.insights)}</div>`,
+        });
+      }
+      return { items };
+    }
+    case "goals":
+      return {
+        items: (sec.items || []).map((g) => ({
+          id: g.id,
+          html: `<div class="b-item"><p><strong>${esc(g.text)}</strong> <span class="tag">${esc(g.statusWord)}</span>${g.isNew ? ` <span class="tag">new this period</span>` : ""}</p>${(g.moves || []).map((m) => `<p class="b-meta">${esc(m.arrow)} ${esc(m.movement)}${m.note ? ` — ${esc(m.note)}` : ""} <span class="b-date">(${esc(m.date)})</span></p>`).join("")}</div>`,
+        })),
+      };
+    case "experiments":
+      return {
+        items: (sec.items || []).map((e) => ({
+          id: e.id,
+          html: `<div class="b-item"><p>Instead of “${esc(e.pattern)}” → trying <strong>${esc(e.replacement)}</strong> <span class="tag">${esc(e.status)}</span></p>
+            ${(e.checkIns || []).map((c) => `<p class="b-meta">check-in ${esc(c.date)}: ${esc(c.note)} <span class="tag">${esc(c.verdict)}</span></p>`).join("")}
+            ${e.outcome ? `<p class="b-meta">Concluded — learned: ${esc(e.outcome.summary)} <span class="tag">${esc(e.outcome.keeping)}</span></p>` : ""}</div>`,
+        })),
+      };
+    case "assignments":
+      return {
+        items: (sec.items || []).map((a) => ({
+          id: a.id,
+          html: `<div class="b-item"><p><strong>${esc(a.text)}</strong> <span class="tag">${esc(a.status)}</span></p>${a.whatToNotice ? `<p class="b-meta">Noticing: ${esc(a.whatToNotice)}</p>` : ""}${a.findings ? `<p class="b-meta">Reported: ${esc(a.findings)}</p>` : ""}</div>`,
+        })),
+      };
+    case "events": {
+      const items = (sec.occurred || []).map((e) => ({
+        id: e.id,
+        html: `<div class="b-item"><p><strong>${esc(e.text)}</strong> <span class="b-date">${esc(e.date)} (${esc(e.rel)})</span></p>${e.note ? `<p class="b-meta">${esc(e.note)}</p>` : ""}</div>`,
+      }));
+      for (const e of sec.horizon || []) items.push({
+        id: e.id,
+        group: "On the horizon",
+        html: `<div class="b-item"><p>${esc(e.text)} <span class="b-date">${e.approx ? "around " : ""}${esc(e.date)} (${esc(e.rel)})</span></p></div>`,
+      });
+      return { items };
+    }
+  }
+  return {};
+}
+
+// ── Data page: the network/lens visualizations (on-screen only) ──
+
+async function renderTherapistData(sub) {
+  const SECS = [["network", "Network"], ["lenses", "Lenses"]];
+  const sec = SECS.some(([k]) => k === sub) ? sub : "network";
+  app.innerHTML = `<h1>Data</h1>
+    <p class="sub">An on-screen exploration of the referential memory. This view doesn't go into briefs.</p>
     <div class="journey-pills" id="thpills"></div>
     <div id="ther"></div>`;
   const box = app.querySelector("#ther");
@@ -1235,7 +1880,6 @@ async function renderTherapist(section) {
 
   const sessions = data.sessions || [];
   const skillsIdx = data.skills || {};
-  const profile = data.profile || {};
 
   if (!sessions.length) {
     app.querySelector("#thpills").remove();
@@ -1257,24 +1901,16 @@ async function renderTherapist(section) {
       drawFreq(skillsIdx, sessions);
       drawCooc(sessions);
     },
-    signals: () => {
-      box.innerHTML = `<div class="card"><h2 style="margin-top:0">Profile signals</h2><div id="psig"></div></div>`;
-      drawProfileSignals(profile);
-    },
-    timeline: () => {
-      box.innerHTML = `<div class="card"><h2 style="margin-top:0">Timeline</h2><div id="tl"></div></div>`;
-      drawTimeline(sessions);
-    },
   };
 
   let current = sec;
   const pills = app.querySelector("#thpills");
   const draw = () => {
-    pills.innerHTML = THERAPIST_SECTIONS.map(([k, label]) =>
+    pills.innerHTML = SECS.map(([k, label]) =>
       `<span class="mc-chip ${current === k ? "sel" : ""}" data-sec="${k}">${label}</span>`).join("");
     pills.querySelectorAll("[data-sec]").forEach((el) => el.addEventListener("click", () => {
       current = el.dataset.sec;
-      history.replaceState(null, "", "#/therapist/" + current);
+      history.replaceState(null, "", "#/therapist/data/" + current);
       draw();
       renderers[current]();
     }));
@@ -1371,34 +2007,3 @@ function drawCooc(sessions) {
     : `<p class="muted">No lenses have co-occurred yet — they appear here once a session touches more than one.</p>`;
 }
 
-function drawProfileSignals(p) {
-  const arr = (x) => Array.isArray(x) ? x : [];
-  const goalText = (g) => (g && typeof g === "object") ? `${g.text}${g.status && g.status !== "active" ? ` [${g.status}]` : ""}` : g;
-  const bits = [];
-  if (p.lifeContext) bits.push(["Life context", p.lifeContext]);
-  if (arr(p.values).length) bits.push(["Values", p.values.join("; ")]);
-  if (arr(p.goals).length) bits.push(["Goals", p.goals.map(goalText).join("; ")]);
-  if (p.relationalContext) bits.push(["Relational context", p.relationalContext]);
-  if (p.emotionalStyle) bits.push(["Emotional style", p.emotionalStyle]);
-  if (p.readiness) bits.push(["Readiness", p.readiness]);
-  if (arr(p.history).length) bits.push(["Turning points", p.history.join("; ")]);
-  if (arr(p.whatHelps).length) bits.push(["What's helped", p.whatHelps.join("; ")]);
-  if (arr(p.presentingConcerns).length) bits.push(["Recurring concerns", p.presentingConcerns.join("; ")]);
-  if (arr(p.redFlags).length) bits.push(["Flags", p.redFlags.join("; ")]);
-  if (arr(p.people).length) bits.push(["People on record", p.people.map((x) => x.name + (x.relationship ? ` (${x.relationship})` : "")).join(", ")]);
-  const hyps = arr(p.hypotheses);
-  const hypTable = hyps.length
-    ? `<p style="margin-bottom:4px"><strong>Working hypotheses:</strong></p>` + hyps.map((h) =>
-        `<div class="row spread" style="padding:2px 0;font-size:0.88rem"><span>${esc(h.statement)}</span><span class="tag">${esc(h.status)} · ${esc(h.confidence)} · ${(h.evidence || []).length} ev.</span></div>`).join("")
-    : "";
-  document.getElementById("psig").innerHTML = (bits.length || hyps.length)
-    ? bits.map(([k, v]) => `<p><strong>${esc(k)}:</strong> ${esc(v)}</p>`).join("") + hypTable
-    : `<p class="muted">Signals accumulate as sessions are saved.</p>`;
-}
-
-function drawTimeline(sessions) {
-  document.getElementById("tl").innerHTML = sessions.map((s) =>
-    `<div class="session-item"><div class="row spread"><strong>${esc(s.title)}</strong><span class="muted">${esc(s.date)}</span></div>
-     <div class="pill-list">${(s.skills || []).map((k) => `<span class="tag">${esc(shortSkill(k))}</span>`).join("")}</div></div>`
-  ).join("");
-}

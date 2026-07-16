@@ -16,6 +16,7 @@ const provider = require("./provider");
 const skills = require("./skills");
 const memory = require("./memory");
 const journey = require("./journey");
+const brief = require("./brief");
 const timeaware = require("./timeaware");
 const safety = require("./safety");
 const tracer = require("./trace");
@@ -447,7 +448,12 @@ function getOpener(cfg) {
     message: `I want to report back on what I was noticing: "${a.text}"`,
   }));
   const starters = journey.openerCandidates();
-  const base = { style, reportBacks, starters, canExplore: sessions.length > 0 || !!profile.lifeContext };
+  // Profile exercises: the depth onboarding deliberately skips (people, goals,
+  // patterns) surfaces here as light invitations once the person is in the app.
+  const exercises = [];
+  if (!(profile.people && profile.people.length)) exercises.push({ kind: "people", label: "Add the people in your life" });
+  if (!(profile.goals && profile.goals.length)) exercises.push({ kind: "goal", label: "Name something you're working toward" });
+  const base = { style, reportBacks, starters, exercises: exercises.slice(0, 2), canExplore: sessions.length > 0 || !!profile.lifeContext };
 
   if (style === "open") {
     return { ...base, blurb: `Hi${name ? " " + name : ""}. What's on your mind?`, options: [] };
@@ -588,11 +594,24 @@ async function onboardFinish(input = {}) {
   const emotionalStyleMC = esArr.join(", ");
   const topics = Array.isArray(mc.topics) ? mc.topics.filter((t) => t && t !== "Not sure yet") : [];
 
+  // People added through the structured widget — typed by the person, so they
+  // outrank anything the extraction infers about the same names.
+  const widgetPeople = (Array.isArray(input.people) ? input.people : [])
+    .filter((x) => x && x.name)
+    .map((x) => ({
+      name: String(x.name),
+      relationship: String(x.relationship || ""),
+      notes: [String(x.notes || ""), x.workingOn ? "(a relationship they're working on)" : ""].filter(Boolean).join(" "),
+    }));
+
+  const quizAnswers = Array.isArray(mc.quizAnswers) ? mc.quizAnswers.filter((x) => x && x.q && x.a) : [];
   const mcSummary = [
-    topics.length ? `Bringing them here: ${topics.join(", ")}` : "",
+    quizAnswers.length ? `Check-in answers (single-tap; broad signals only, NOT the person's own words):\n${quizAnswers.map((x) => `  - ${x.q} → ${x.a}`).join("\n")}` : "",
+    topics.length ? `Answers that stood out: ${topics.join("; ")}` : "",
     readinessArr.length ? `What they want, in priority order: ${readinessArr.join(" > ")}` : "",
     mc.tone ? `Preferred tone: ${mc.tone}` : "",
     esArr.length ? `Self-reported way(s) of handling feelings: ${esArr.join(", ")}` : "",
+    widgetPeople.length ? `People they added: ${widgetPeople.map((p) => `${p.name}${p.relationship ? ` (${p.relationship})` : ""}${p.notes ? ` — ${p.notes}` : ""}`).join("; ")}` : "",
   ].filter(Boolean).join("\n");
 
   const transcripts = (input.sections || [])
@@ -605,7 +624,7 @@ async function onboardFinish(input = {}) {
   // LLM extraction over the conversational parts (best-effort).
   let extracted = {};
   const hasConvo = (input.sections || []).some((s) => (s.messages || []).some((m) => m.role === "user"));
-  if (hasConvo || topics.length) {
+  if (hasConvo || topics.length || widgetPeople.length) {
     try {
       const raw = await timedComplete(
         "onboard-extract",
@@ -619,7 +638,9 @@ async function onboardFinish(input = {}) {
   // Merge deterministic MC over/into the extraction, then seed the profile.
   const data = {
     lifeContext: extracted.lifeContext || "",
-    people: Array.isArray(extracted.people) ? extracted.people : [],
+    // Widget people last: mergePeople dedupes by name, and the person's own
+    // typed entry should win over anything the model inferred.
+    people: [...(Array.isArray(extracted.people) ? extracted.people : []), ...widgetPeople],
     values: extracted.values || [],
     goals: extracted.goals || [],
     history: extracted.history || [],
@@ -630,7 +651,10 @@ async function onboardFinish(input = {}) {
     presentingConcerns: extracted.presentingConcerns && extracted.presentingConcerns.length
       ? extracted.presentingConcerns
       : (topics.length ? [topics.join(", ")] : []),
-    suspectedPatterns: extracted.suspectedPatterns || [],
+    // Hard gate, independent of the prompt: a hypothesis needs the person's own
+    // words. If they skipped the conversational sections, no pattern gets
+    // minted from multiple-choice taps — ever.
+    suspectedPatterns: hasConvo ? (extracted.suspectedPatterns || []) : [],
     tone: mc.tone || "",
   };
   memory.seedFromOnboardingExtraction(data);
@@ -655,6 +679,29 @@ async function onboardFinish(input = {}) {
   return { ok: true, seeded: data, archived: !!archivedTo };
 }
 
+// ─── Therapist brief ─────────────────────────────────────────────────────────
+
+/**
+ * Compose the (already user-filtered) brief data and write its opening
+ * narrative in one model call. The digest is built from the same filtered
+ * object the document renders, so excluded items cannot reach the prose.
+ */
+async function generateBriefNarrative(selection = {}) {
+  const cfg = loadConfig();
+  const composed = brief.composeBrief(selection);
+  if (!composed) throw new Error("invalid brief selection");
+  const digest = brief.digestForNarrative(composed);
+  const prompt = T.buildBriefNarrativePrompt({
+    preset: composed.preset,
+    clientName: composed.header.clientName,
+    todayLine: timeaware.longNow(),
+    windowLine: composed.header.windowLine ? composed.header.windowLine.toLowerCase() : "",
+    digest: digest || "(nothing was shared — say so honestly in one short paragraph)",
+  });
+  const raw = await timedComplete("brief", prompt, { provider: cfg.provider, config: cfg });
+  return stripMarkdown(String(raw)).trim();
+}
+
 // ─── Management ──────────────────────────────────────────────────────────────
 
 function currentSessionView() {
@@ -676,6 +723,7 @@ module.exports = {
   setSessionMode,
   onboardChat,
   onboardFinish,
+  generateBriefNarrative,
   currentSessionView,
   clearCurrent,
   parseJsonLoose,

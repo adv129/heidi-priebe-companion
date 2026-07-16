@@ -44,6 +44,7 @@ const core = require("./core");
 const skills = require("./skills");
 const memory = require("./memory");
 const journey = require("./journey");
+const brief = require("./brief");
 const T = require("./templates");
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -295,6 +296,13 @@ async function handleRequest(req, res) {
     return;
   }
 
+  // ── POST /api/profile/add — direct additions from the fill-in exercises ──────
+  if (req.method === "POST" && pathname === "/api/profile/add") {
+    let body; try { body = JSON.parse(await readBody(req)); } catch { apiError(res, 400, "invalid JSON"); return; }
+    json(res, 200, memory.addDirect({ people: body.people, goals: body.goals }));
+    return;
+  }
+
   // ── POST /api/memory/hypothesis/:id/vote — up ("fits") / down ("doesn't fit")
   const hypMatch = pathname.match(/^\/api\/memory\/hypothesis\/([\w.:-]+)\/vote$/);
   if (req.method === "POST" && hypMatch) {
@@ -324,7 +332,74 @@ async function handleRequest(req, res) {
   if (req.method === "DELETE" && pathname === "/api/memory") {
     core.clearCurrent();
     journey.wipe();
+    brief.wipe();
     json(res, 200, memory.deleteAll());
+    return;
+  }
+
+  // ── Therapist briefs ──────────────────────────────────────────────────────────
+
+  // GET /api/briefs — meta list for the briefs home (+ the default window)
+  if (req.method === "GET" && pathname === "/api/briefs") {
+    json(res, 200, { briefs: brief.listBriefs(), defaultWindow: brief.defaultWindowStart() });
+    return;
+  }
+
+  // POST /api/brief/preview — compose the full (unexcluded) dataset, no persist
+  if (req.method === "POST" && pathname === "/api/brief/preview") {
+    let body; try { body = JSON.parse(await readBody(req)); } catch { apiError(res, 400, "invalid JSON"); return; }
+    const composed = brief.composeBrief({ preset: body.preset, windowStart: body.windowStart || null });
+    if (!composed) { apiError(res, 400, "invalid preset"); return; }
+    json(res, 200, composed);
+    return;
+  }
+
+  // POST /api/brief/narrative — one model call over the user-filtered selection
+  if (req.method === "POST" && pathname === "/api/brief/narrative") {
+    if (busy) { apiError(res, 409, "busy"); return; }
+    busy = true;
+    try {
+      let body; try { body = JSON.parse(await readBody(req)); } catch { apiError(res, 400, "invalid JSON"); return; }
+      const narrative = await core.generateBriefNarrative({
+        preset: body.preset,
+        windowStart: body.windowStart || null,
+        sections: body.sections,
+        excluded: body.excluded,
+      });
+      json(res, 200, { narrative });
+    } catch (e) { if (!res.headersSent) apiError(res, 502, e.message); }
+    finally { busy = false; }
+    return;
+  }
+
+  // POST /api/brief — persist (data snapshot re-composed server-side)
+  if (req.method === "POST" && pathname === "/api/brief") {
+    let body; try { body = JSON.parse(await readBody(req)); } catch { apiError(res, 400, "invalid JSON"); return; }
+    const saved = brief.saveBrief({
+      preset: body.preset,
+      windowStart: body.windowStart || null,
+      sections: body.sections,
+      excluded: body.excluded,
+      narrative: body.narrative,
+      narrativeEdited: body.narrativeEdited === true,
+    });
+    if (!saved) { apiError(res, 400, "invalid preset"); return; }
+    json(res, 200, { ok: true, id: saved.id });
+    return;
+  }
+
+  // GET /api/brief/:id — a saved brief (immutable snapshot)
+  const briefMatch = pathname.match(/^\/api\/brief\/([\w.:-]+)$/);
+  if (req.method === "GET" && briefMatch) {
+    const b = brief.getBrief(briefMatch[1]);
+    if (!b) { apiError(res, 404, "no such brief"); return; }
+    json(res, 200, b);
+    return;
+  }
+
+  // DELETE /api/brief/:id
+  if (req.method === "DELETE" && briefMatch) {
+    json(res, 200, brief.deleteBrief(briefMatch[1]));
     return;
   }
 
