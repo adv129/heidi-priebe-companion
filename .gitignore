@@ -34,3 +34,4 @@ node_modules/
 
 # Design reference screenshots (not app code)
 design-refs/
+memory.pre-merge-backup-*/
