@@ -92,20 +92,30 @@ for (const dir of dirs) {
   }
 }
 
-// agent-core routing table: heading must exist (core.js regex-extracts it for
-// the route prompt) and every backticked name in it must be a real folder.
+// agent-core routing: ALL router-facing machinery (phases, routing table)
+// lives in references/routing-map.md — agentCoreRoutingTable() in src/core.js
+// sends that whole file to the route prompt. The respond-facing SKILL.md is
+// inlined into every respond call and must NOT carry a routing table.
 {
-  const rel = `skills/${AGENT_CORE}/SKILL.md`;
-  const coreFile = path.join(SKILLS_DIR, AGENT_CORE, "SKILL.md");
-  if (fs.existsSync(coreFile)) {
-    const { body } = parseFrontmatter(fs.readFileSync(coreFile, "utf8"));
-    const table = body.match(/###?\s*Routing table[\s\S]*?(?=\n##\s|\n---|\s*$)/i);
+  const rel = `skills/${AGENT_CORE}/references/routing-map.md`;
+  const mapFile = path.join(SKILLS_DIR, AGENT_CORE, "references", "routing-map.md");
+  if (!fs.existsSync(mapFile)) {
+    err(rel, "missing — agentCoreRoutingTable() in src/core.js sends this file to the router (if it moved on purpose, update core.js and this linter together)");
+  } else {
+    const table = fs.readFileSync(mapFile, "utf8").match(/###?\s*Routing table[\s\S]*?(?=\n##\s|\n---|\s*$)/i);
     if (!table) {
-      err(rel, 'no "Routing table" heading — agentCoreRoutingTable() in src/core.js extracts it by that name (if the table moved on purpose, update core.js and this linter together)');
+      err(rel, 'no "Routing table" heading/section — the router loses its signal → skill map');
     } else {
       for (const m of table[0].matchAll(/`([a-z][\w-]*)`/g)) {
         if (!skillNames.has(m[1])) err(rel, `routing table loads \`${m[1]}\` — no such folder in skills/`);
       }
+    }
+  }
+  const coreFile = path.join(SKILLS_DIR, AGENT_CORE, "SKILL.md");
+  if (fs.existsSync(coreFile)) {
+    const { body } = parseFrontmatter(fs.readFileSync(coreFile, "utf8"));
+    if (/###?\s*Routing table/i.test(body)) {
+      err(`skills/${AGENT_CORE}/SKILL.md`, "contains a Routing table — router machinery belongs in references/routing-map.md, SKILL.md is respond-facing only");
     }
   }
 }

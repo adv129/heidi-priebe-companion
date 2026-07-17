@@ -41,7 +41,7 @@ ${explore}
 TOPICAL SKILLS AVAILABLE:
 ${catalog}
 
-AGENT-CORE ROUTING SIGNALS (presenting signal → skill):
+AGENT-CORE ROUTING GUIDANCE (signals → skill, mixed presentations, when not to route):
 ${routingTable}
 
 CURRENT ACTIVE SKILL: ${currentSkill || "(none)"}

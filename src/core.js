@@ -122,13 +122,10 @@ function renderTranscript(messages, limit = MAX_HISTORY_MSGS) {
 }
 
 function agentCoreRoutingTable() {
-  const body = skills.readAgentCore();
-  const m = body.match(/###?\s*Routing table[\s\S]*?(?=\n##\s|\n---|\s*$)/i);
-  const table = m ? m[0].trim() : body;
-  // Extended routing logic (mixed presentations, when NOT to route) lives in
-  // agent-core's routing-map.md — the router is its only consumer.
-  const extended = skills.tryReadReference(skills.AGENT_CORE, "routing-map.md");
-  return extended ? `${table}\n\n${extended}` : table;
+  // ALL router-facing agent-core machinery (routing signals, the routing
+  // table, mixed presentations) lives in routing-map.md; agent-core's
+  // SKILL.md is respond-facing only and never reaches the route prompt.
+  return skills.tryReadReference(skills.AGENT_CORE, "routing-map.md") || skills.readAgentCore();
 }
 
 /** Timed provider call that trace-logs the full prompt, output, model, and latency. */
