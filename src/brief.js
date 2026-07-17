@@ -394,11 +394,12 @@ function composeBrief({ preset, windowStart = null, sections = null, excluded = 
         })), excluded.experiments),
     });
 
-    add("assignments", "Noticing assignments", true, {
+    add("assignments", "Homework / noticing assignments", true, {
       items: excludeIds(memory.getAssignments()
         .filter((a) => inWindow(a.givenAt, win) || (a.report && inWindow(a.report.at, win)))
         .map((a) => ({
           id: a.id,
+          type: a.type || "notice",
           text: a.text,
           whatToNotice: a.whatToNotice || "",
           status: a.status,
@@ -553,9 +554,9 @@ function digestForNarrative(composed) {
       }
       case "assignments": {
         if (!sec.items.length) break;
-        S("Noticing assignments this period");
+        S("Homework / noticing assignments this period");
         for (const a of sec.items) {
-          L.push(`- "${a.text}" (given ${a.givenRel}; ${a.status})${a.findings ? ` — reported: ${a.findings}` : ""}`);
+          L.push(`- "${a.text}" (${a.type || "notice"}; given ${a.givenRel}; ${a.status})${a.findings ? ` — reported: ${a.findings}` : ""}`);
         }
         break;
       }

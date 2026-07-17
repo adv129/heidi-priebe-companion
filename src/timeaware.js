@@ -138,7 +138,7 @@ function timeContext({ now = new Date(), sessions = [], events = [], experiments
     const counts = [];
     if (passed.length) counts.push(`${passed.length} passed event(s) not yet asked about`);
     if (running.length) counts.push(`${running.length} experiment(s) running`);
-    if (openAsg.length) counts.push(`${openAsg.length} open noticing assignment(s)`);
+    if (openAsg.length) counts.push(`${openAsg.length} open homework item(s)`);
     if (counts.length) bits.push(counts.join("; ") + ".");
     return bits.join(" ");
   }
@@ -166,7 +166,7 @@ function timeContext({ now = new Date(), sessions = [], events = [], experiments
 
   if (openAsg.length) {
     const a = openAsg.slice().sort((x, y) => String(x.givenAt).localeCompare(String(y.givenAt)))[0];
-    lines.push(`Open noticing assignment: given ${relPhrase(a.givenAt, now)} — "${a.text}".`);
+    lines.push(`Open homework (${a.type || "notice"}): given ${relPhrase(a.givenAt, now)} — "${a.text}".`);
   }
 
   for (const e of running.slice(0, 2)) {

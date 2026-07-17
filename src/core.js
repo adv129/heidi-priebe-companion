@@ -418,7 +418,7 @@ async function endSession() {
   // Fold the understanding + journey loops. Each is defensive — malformed
   // fields are skipped item-by-item and never block the session save.
   try { if (parsed.hypothesisUpdates) memory.applyHypothesisUpdates(parsed.hypothesisUpdates, node.id); } catch (e) { console.error(`[hypotheses] ${e.message}`); }
-  try { if (parsed.assignmentUpdates) memory.applyAssignmentUpdates(parsed.assignmentUpdates, node.id); } catch (e) { console.error(`[assignments] ${e.message}`); }
+  try { if (parsed.assignmentUpdates) memory.applyAssignmentUpdates(parsed.assignmentUpdates, node.id, { experiments: journey.loadExperiments().experiments }); } catch (e) { console.error(`[assignments] ${e.message}`); }
   try { if (parsed.goalProgress) memory.applyGoalProgress(parsed.goalProgress); } catch (e) { console.error(`[goals] ${e.message}`); }
   try { journey.applyConsolidation(parsed, node.id, now); } catch (e) { console.error(`[journey] ${e.message}`); }
   if (parsed.nextOpener) {
@@ -439,14 +439,22 @@ function getOpener(cfg) {
   const name = profile.name || (cfg && cfg.user && cfg.user.name) || "";
   const sessions = memory.listSessions();
 
-  // These ride along for every style: report-back chips for open noticing
-  // assignments, deterministic journey starters (passed event / experiment
+  // These ride along for every style: report-back chips for open homework
+  // items, deterministic journey starters (passed event / experiment
   // check-in — at most one), and whether an explore session makes sense yet.
-  const reportBacks = memory.openAssignments().slice(0, 2).map((a) => ({
-    id: a.id,
-    label: `Report back: ${a.text.length > 44 ? a.text.slice(0, 44).trim() + "…" : a.text}`,
-    message: `I want to report back on what I was noticing: "${a.text}"`,
-  }));
+  const chipByType = {
+    notice: { label: "Report back", message: (t) => `I want to report back on what I was noticing: "${t}"` },
+    action: { label: "How it went", message: (t) => `I want to tell you how it went — the thing I said I'd try: "${t}"` },
+    reflection: { label: "What came up", message: (t) => `I want to share what came up when I sat with: "${t}"` },
+  };
+  const reportBacks = memory.openAssignments().slice(0, 2).map((a) => {
+    const chip = chipByType[a.type] || chipByType.notice;
+    return {
+      id: a.id,
+      label: `${chip.label}: ${a.text.length > 44 ? a.text.slice(0, 44).trim() + "…" : a.text}`,
+      message: chip.message(a.text),
+    };
+  });
   const starters = journey.openerCandidates();
   // Profile exercises: the depth onboarding deliberately skips (people, goals,
   // patterns) surfaces here as light invitations once the person is in the app.

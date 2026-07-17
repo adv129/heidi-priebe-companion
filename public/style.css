@@ -908,9 +908,9 @@ input[type="range"]:focus::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--ac
 .goal-notes { margin-top: 10px; font-family: var(--font-ui); font-size: 0.85rem; }
 
 /* Status tags: quiet color coding on top of the base .tag */
-.tag.status-supported, .tag.status-running, .tag.status-progressing, .tag.status-achieved { background: var(--sage-soft); color: var(--sage); }
-.tag.status-testing { background: var(--accent-soft); color: var(--accent); }
-.tag.status-retired, .tag.status-concluded, .tag.status-stalled { opacity: 0.75; }
+.tag.status-supported, .tag.status-running, .tag.status-progressing, .tag.status-achieved, .tag.status-reported { background: var(--sage-soft); color: var(--sage); }
+.tag.status-testing, .tag.status-open { background: var(--accent-soft); color: var(--accent); }
+.tag.status-retired, .tag.status-concluded, .tag.status-stalled, .tag.status-dropped { opacity: 0.75; }
 
 /* ── Motion / a11y ───────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {

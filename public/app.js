@@ -973,6 +973,7 @@ const JOURNEY_SECTIONS = [
   ["timeline", "Timeline"],
   ["patterns", "Patterns"],
   ["experiments", "Experiments"],
+  ["homework", "Homework"],
   ["goals", "Goals"],
   ["you", "About you"],
   ["sessions", "Sessions"],
@@ -1014,6 +1015,7 @@ async function renderJourney(section) {
     timeline: () => renderJourneyTimeline(body, timeline.entries || []),
     patterns: () => renderPatterns(body, (data.profile || {}).hypotheses || [], () => renderJourney("patterns")),
     experiments: () => renderExperiments(body, data.experiments || []),
+    homework: () => renderHomework(body, (data.profile || {}).assignments || [], (data.profile || {}).hypotheses || []),
     goals: () => renderGoals(body, (data.profile || {}).goals || []),
     you: () => renderProfileYou(body, data.profile || {}),
     sessions: () => renderSessionsList(body, data.sessions || []),
@@ -1172,6 +1174,46 @@ function renderExperiments(body, experiments) {
     + (done.length ? `<h2 style="font-size:1.05rem">Wrapped up</h2>` + done.map(card).join("") : "");
   body.querySelectorAll("[data-exp-talk]").forEach((btn) => btn.addEventListener("click", () => {
     sessionStorage.setItem("composerPrefill", `I want to check in on the experiment we set up — "${btn.dataset.expTalk}".`);
+    location.hash = "#/chat";
+  }));
+}
+
+const HW_TYPE_WORDS = { notice: "noticing", action: "action", reflection: "reflection" };
+const HW_STATUS_WORDS = { open: "open", reported: "reported back", dropped: "set aside" };
+const HW_SIGNAL_WORDS = { supports: "it fits the pattern", complicates: "it complicates the pattern", unclear: "hard to say yet" };
+
+function renderHomework(body, assignments, hypotheses) {
+  if (!assignments.length) {
+    body.innerHTML = `<div class="card"><p class="muted">No homework yet. When something is worth carrying into real life — something to notice, a small thing to try, or a question to sit with — it shows up here. Always your call to take it on.</p></div>`;
+    return;
+  }
+  const open = assignments.filter((a) => a.status === "open");
+  const done = assignments.filter((a) => a.status !== "open");
+  const card = (a) => {
+    const type = a.type || "notice";
+    const hyp = a.linkedHypothesisId ? hypotheses.find((h) => h.id === a.linkedHypothesisId) : null;
+    return `<div class="card exp-card">
+      <div class="pill-list">
+        <span class="tag">${esc(HW_TYPE_WORDS[type] || type)}</span>
+        <span class="tag status-${esc(a.status)}">${esc(HW_STATUS_WORDS[a.status] || a.status)}</span>
+      </div>
+      <p class="exp-swap"><strong>${esc(a.text)}</strong></p>
+      ${a.whatToNotice && a.whatToNotice !== a.text ? `<p class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.86rem">watching for: ${esc(a.whatToNotice)}</p>` : ""}
+      ${hyp ? `<div class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.82rem">tied to: “${esc(hyp.statement)}”</div>` : ""}
+      <div class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.82rem">given ${esc(relTime(a.givenAt))}</div>
+      ${a.report ? `<p style="margin-bottom:0"><strong>What you noticed:</strong> ${esc(a.report.findings || "")}${a.report.hypothesisSignal ? ` <span class="muted">(${esc(HW_SIGNAL_WORDS[a.report.hypothesisSignal] || a.report.hypothesisSignal)})</span>` : ""}</p>` : a.status === "open" ? `
+      <div style="margin-top:10px"><button data-hw-talk="${esc(a.text)}" data-hw-type="${esc(type)}">Talk about this</button></div>` : ""}
+    </div>`;
+  };
+  body.innerHTML = open.map(card).join("")
+    + (done.length ? `<h2 style="font-size:1.05rem">Past homework</h2>` + done.map(card).join("") : "");
+  body.querySelectorAll("[data-hw-talk]").forEach((btn) => btn.addEventListener("click", () => {
+    const messages = {
+      notice: `I want to report back on what I was noticing: "${btn.dataset.hwTalk}"`,
+      action: `I want to tell you how it went — the thing I said I'd try: "${btn.dataset.hwTalk}"`,
+      reflection: `I want to share what came up when I sat with: "${btn.dataset.hwTalk}"`,
+    };
+    sessionStorage.setItem("composerPrefill", messages[btn.dataset.hwType] || messages.notice);
     location.hash = "#/chat";
   }));
 }

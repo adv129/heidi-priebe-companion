@@ -303,9 +303,10 @@ function composeTimeline() {
     if (h.status === "supported" && h.statusChangedAt) push(h.statusChangedAt, "pattern-named", "A pattern came into focus", h.statement, h.id, "hypothesis");
   }
 
+  const ASG_TITLES = { notice: "Something to notice", action: "Something to try", reflection: "Something to reflect on" };
   const asgs = (typeof memory.getAssignments === "function" ? memory.getAssignments() : []) || [];
   for (const a of asgs) {
-    push(a.givenAt, "assignment-given", "Something to notice", a.text, a.id, "assignment");
+    push(a.givenAt, "assignment-given", ASG_TITLES[a.type] || ASG_TITLES.notice, a.text, a.id, "assignment");
     if (a.report) push(a.report.at, "assignment-reported", "Reported back", a.report.findings, a.id, "assignment");
   }
 
