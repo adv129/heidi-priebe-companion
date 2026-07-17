@@ -29,6 +29,58 @@ async function api(method, path, body) {
   return data;
 }
 
+/**
+ * One chat turn with progressive bubbles. Asks for SSE; onChunk(text, i) fires
+ * per bubble as the model writes. Resolves with the full done payload. If the
+ * server answers plain JSON instead (errors, or a build without SSE), the
+ * chunks are synthesized from the payload so callers never see the difference.
+ */
+async function streamChat(body, onChunk) {
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify(body),
+  });
+  const ctype = res.headers.get("content-type") || "";
+  if (ctype.includes("application/json")) {
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!res.ok) throw new Error(data.error || `${res.status}`);
+    (data.chunks && data.chunks.length ? data.chunks : [data.reply]).forEach((c, i) => onChunk(c, i));
+    return data;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let donePayload = null;
+  const handleFrame = (frame) => {
+    let event = "message", data = "";
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data += line.slice(5).trim();
+    }
+    if (!data) return;
+    let payload;
+    try { payload = JSON.parse(data); } catch { return; }
+    if (event === "chunk") onChunk(payload.text, payload.i);
+    else if (event === "done") donePayload = payload;
+    else if (event === "error") throw new Error(payload.error || "stream error");
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      handleFrame(buf.slice(0, idx)); // may throw on event: error — bubbles up
+      buf = buf.slice(idx + 2);
+    }
+  }
+  if (donePayload) return donePayload;
+  throw new Error("connection lost mid-reply");
+}
+
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
@@ -596,7 +648,12 @@ async function renderChat() {
   exploring = sess.mode === "explore";
 
   if (sess.messages && sess.messages.length) {
-    sess.messages.forEach((m) => addBubble(scroll, m.role, m.content, m.trace));
+    sess.messages.forEach((m) => {
+      // Chunked assistant messages restore as one bubble each, trace on the
+      // last only. Old messages (no chunks) render exactly as before.
+      const parts = m.role === "assistant" && m.chunks && m.chunks.length ? m.chunks : [m.content];
+      parts.forEach((p, i) => addBubble(scroll, m.role, p, i === parts.length - 1 ? m.trace : null));
+    });
     setModeLens(sess.activeSkill, false);
   } else {
     let opener = { blurb: "Hi. What's on your mind?", options: [] };
@@ -670,19 +727,41 @@ async function renderChat() {
     typing.appendChild(scrollLoader());
     markFocused(); scrollDown(); requestAnimationFrame(applyFocusState);
     app.querySelector("#send-btn").disabled = true;
+
+    // Bubbles stream in progressively: first chunk replaces the loader and a
+    // small persistent typing bubble trails the conversation; each later chunk
+    // slots in before it; done removes it and pins the trace on the last bubble.
+    let typingBubble = null; // the between-chunks indicator (after first chunk)
+    let lastBubble = null;   // last assistant bubble of this turn
+    const onChunk = (chunkText) => {
+      if (!typingBubble) {
+        typing.remove(); // the initial loader bubble
+        typingBubble = addBubble(scroll, "assistant", "");
+        typingBubble.classList.add("loading");
+        typingBubble.appendChild(scrollLoader());
+      }
+      const b = addBubble(scroll, "assistant", chunkText);
+      scroll.insertBefore(b, typingBubble);
+      lastBubble = b;
+      markFocused(); scrollDown(); requestAnimationFrame(applyFocusState);
+    };
+
     try {
-      const r = await api("POST", "/api/chat", { message: msg });
-      typing.classList.remove("loading");
-      typing.remove();
-      const bubble = addBubble(scroll, "assistant", r.reply, r.trace);
+      const r = await streamChat({ message: msg }, onChunk);
+      if (typingBubble) typingBubble.remove();
+      else typing.remove(); // no chunk ever arrived (shouldn't happen, but never strand the loader)
+      if (!lastBubble && r.reply) lastBubble = addBubble(scroll, "assistant", r.reply);
+      if (lastBubble) attachTrace(lastBubble, r.trace);
       exploring = r.mode === "explore";
       if (r.safety) setLens("your wellbeing comes first", true);
       else setModeLens(r.activeSkill, false);
       if (r.suggestExplore) renderExploreNudge();
       if (r.close) renderCloseNudge(scroll);
     } catch (e) {
-      typing.classList.remove("loading");
-      typing.textContent = "(couldn't reach the model: " + e.message + ")";
+      const errBubble = typingBubble || typing;
+      errBubble.classList.remove("loading");
+      errBubble.replaceChildren();
+      errBubble.textContent = "(couldn't reach the model: " + e.message + ")";
     } finally {
       app.querySelector("#send-btn").disabled = false;
       markFocused(); scrollDown(); input.focus();
@@ -853,21 +932,25 @@ function addBubble(scroll, role, text, trace) {
   const div = document.createElement("div");
   div.className = "msg " + role;
   div.textContent = text;
-  if (role === "assistant" && trace && (trace.activeLens || trace.routerReason || trace.recalledSessionId)) {
-    const wrap = document.createElement("div"); wrap.className = "think-wrap";
-    const btn = document.createElement("button"); btn.className = "think-toggle"; btn.textContent = "Show thinking";
-    const panel = document.createElement("div"); panel.className = "think-panel"; panel.style.display = "none";
-    panel.innerHTML = traceHtml(trace);
-    btn.addEventListener("click", () => {
-      const open = panel.style.display !== "none";
-      panel.style.display = open ? "none" : "block";
-      btn.textContent = open ? "Show thinking" : "Hide thinking";
-    });
-    wrap.appendChild(btn); wrap.appendChild(panel);
-    div.appendChild(wrap);
-  }
+  if (role === "assistant") attachTrace(div, trace);
   scroll.appendChild(div);
   return div;
+}
+
+/** Attach the collapsible "Show thinking" trace panel to an assistant bubble. */
+function attachTrace(div, trace) {
+  if (!trace || !(trace.activeLens || trace.routerReason || trace.recalledSessionId)) return;
+  const wrap = document.createElement("div"); wrap.className = "think-wrap";
+  const btn = document.createElement("button"); btn.className = "think-toggle"; btn.textContent = "Show thinking";
+  const panel = document.createElement("div"); panel.className = "think-panel"; panel.style.display = "none";
+  panel.innerHTML = traceHtml(trace);
+  btn.addEventListener("click", () => {
+    const open = panel.style.display !== "none";
+    panel.style.display = open ? "none" : "block";
+    btn.textContent = open ? "Show thinking" : "Hide thinking";
+  });
+  wrap.appendChild(btn); wrap.appendChild(panel);
+  div.appendChild(wrap);
 }
 
 function traceHtml(t) {

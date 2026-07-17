@@ -228,6 +228,11 @@ async function handleRequest(req, res) {
   }
 
   // ── POST /api/chat — one conversation turn ────────────────────────────────────
+  // With `Accept: text/event-stream` the reply streams as SSE bubbles:
+  //   event: chunk {i,text} per bubble → event: done {full result} → end.
+  // Pre-checks still return plain JSON errors before any SSE headers go out.
+  // Without the Accept header it's the original single JSON blob (now
+  // including `chunks`).
   if (req.method === "POST" && pathname === "/api/chat") {
     if (busy) { apiError(res, 409, "busy"); return; }
     busy = true;
@@ -238,8 +243,31 @@ async function handleRequest(req, res) {
       if (!message) { apiError(res, 400, "message required"); return; }
       const cfg = core.loadConfig();
       if (!cfg || !cfg.setupComplete) { apiError(res, 400, "setup incomplete"); return; }
-      const result = await core.handleTurn(message);
-      json(res, 200, result);
+
+      if ((req.headers.accept || "").includes("text/event-stream")) {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Connection": "keep-alive",
+        });
+        res.write(": ok\n\n"); // flush headers immediately (proves the stream is live)
+        // Late writes after a client disconnect are no-ops via this guard;
+        // handleTurn still runs to completion and saves the session either way.
+        const sse = (event, data) => {
+          if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        };
+        try {
+          const result = await core.handleTurn(message, { onChunk: (text, i) => sse("chunk", { i, text }) });
+          sse("done", result);
+        } catch (e) {
+          sse("error", { error: e.message });
+        } finally {
+          if (!res.writableEnded) res.end();
+        }
+      } else {
+        const result = await core.handleTurn(message);
+        json(res, 200, result);
+      }
     } catch (e) {
       if (!res.headersSent) apiError(res, 500, e.message);
     } finally {

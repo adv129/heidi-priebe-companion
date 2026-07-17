@@ -36,12 +36,89 @@ function runCli(cmd, args) {
 // Optional model pin via config["claude-p"]: a single { model } applies to every
 // call, or { models: { <kind>: id } } overrides per call kind. With neither set,
 // runs bare `claude -p` (whatever the login resolves — currently Opus 4.8).
-function claudeP(prompt, opts = {}) {
+//
+// Every spawn gets `--no-session-persistence --tools ""`: the app never uses
+// CLI tools, and dropping the tool schemas cuts per-spawn cache-write from
+// ~27K to ~6.9K tokens — the single biggest latency/cost lever on this path.
+// (Do NOT use --bare: it breaks OAuth and would require an API key.)
+function claudePArgs(opts = {}) {
   const conf = (opts.config && opts.config["claude-p"]) || {};
   const model = (conf.models && conf.models[opts.kind]) || conf.model;
   const args = ["-p"];
   if (model) args.push("--model", model);
-  return runCli("claude", args)(prompt);
+  return { args, model };
+}
+
+function claudeP(prompt, opts = {}) {
+  const { args } = claudePArgs(opts);
+  return runCli("claude", [...args, "--no-session-persistence", "--tools", ""])(prompt);
+}
+
+// Streaming variant: `--output-format stream-json --include-partial-messages`
+// emits JSONL — text deltas as they're written plus a final authoritative
+// {"type":"result","result":"…"} line. Thinking deltas DO occur and are
+// filtered out; only text_delta reaches onDelta. Per-line JSON.parse is
+// try/caught so shape drift across CLI versions degrades to the result line
+// (or the accumulated deltas) instead of breaking the turn.
+function claudePStream(prompt, opts = {}, onDelta) {
+  const { args, model } = claudePArgs(opts);
+  const fullArgs = [
+    ...args,
+    "--output-format", "stream-json",
+    "--include-partial-messages",
+    "--verbose",
+    "--no-session-persistence",
+    "--tools", "",
+  ];
+  return new Promise((resolve, reject) => {
+    const child = spawn("claude", fullArgs, { stdio: ["pipe", "pipe", "inherit"] });
+    let buf = "";          // trailing partial line kept across data events
+    let accumulated = "";  // all text deltas, fallback if no result line
+    let resultText = null; // the authoritative final result
+    let resultError = null;
+
+    const handleLine = (line) => {
+      if (!line.trim()) return;
+      let msg;
+      try { msg = JSON.parse(line); } catch { return; } // skip non-JSON / partial lines
+      if (msg.type === "stream_event") {
+        const delta = msg.event && msg.event.delta;
+        if (delta && delta.type === "text_delta" && typeof delta.text === "string" && delta.text) {
+          accumulated += delta.text;
+          if (onDelta) { try { onDelta(delta.text); } catch { /* consumer errors never kill the stream */ } }
+        }
+      } else if (msg.type === "result") {
+        if (msg.is_error) resultError = new Error(`claude -p: ${typeof msg.result === "string" ? msg.result : msg.subtype || "error result"}`);
+        else if (typeof msg.result === "string") resultText = msg.result;
+        if (opts.usageSink) {
+          if (model) opts.usageSink.model = model;
+          if (msg.usage) opts.usageSink.tokens = msg.usage;
+          if (typeof msg.total_cost_usd === "number") opts.usageSink.costUsd = msg.total_cost_usd;
+        }
+      }
+    };
+
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (c) => {
+      buf += c;
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        handleLine(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+      }
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (buf) handleLine(buf);
+      if (resultError) return reject(resultError);
+      const text = (resultText != null ? resultText : accumulated).trim();
+      if (code !== 0 && !text) return reject(new Error(`claude exited with code ${code}`));
+      if (!text) return reject(new Error("claude -p: empty completion"));
+      resolve(text);
+    });
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
 }
 
 // --- Adapter: OpenRouter / raw API key ----------------------------------
@@ -160,10 +237,96 @@ async function anthropic(prompt, opts = {}) {
   return text;
 }
 
+// --- Adapter: Anthropic Messages API, streaming ---------------------------
+// Identical request body to anthropic() plus stream:true; hand-parsed SSE
+// (zero-dependency: getReader + TextDecoder, frames split on \n\n).
+async function anthropicStream(prompt, opts = {}, onDelta) {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) throw new Error("ANTHROPIC_API_KEY not set");
+
+  const kindCfg = ANTHROPIC_KINDS[opts.kind] || ANTHROPIC_DEFAULT;
+  const conf = (opts.config && opts.config.anthropic) || {};
+  const model = (conf.models && conf.models[opts.kind]) || kindCfg.model;
+  const maxTokens = (conf.maxTokens && conf.maxTokens[opts.kind]) || kindCfg.maxTokens;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      thinking: { type: "disabled" },
+      stream: true,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  if (!res.ok) throw new Error(`anthropic ${res.status}: ${await res.text()}`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let text = "";
+  const usage = {}; // message_start carries input/cache tokens; message_delta carries output tokens
+
+  const handleFrame = (frame) => {
+    const payload = frame
+      .split("\n")
+      .filter((l) => l.startsWith("data:"))
+      .map((l) => l.slice(5).trim())
+      .join("");
+    if (!payload || payload === "[DONE]") return;
+    let ev;
+    try { ev = JSON.parse(payload); } catch { return; }
+    if (ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta" && ev.delta.text) {
+      text += ev.delta.text;
+      if (onDelta) { try { onDelta(ev.delta.text); } catch { /* consumer errors never kill the stream */ } }
+    } else if (ev.type === "message_start" && ev.message && ev.message.usage) {
+      Object.assign(usage, ev.message.usage);
+    } else if (ev.type === "message_delta") {
+      if (ev.usage) Object.assign(usage, ev.usage);
+      if (ev.delta && ev.delta.stop_reason === "refusal") throw new Error("anthropic: request refused");
+    } else if (ev.type === "error") {
+      throw new Error(`anthropic stream: ${(ev.error && ev.error.message) || "unknown error"}`);
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      handleFrame(buf.slice(0, idx));
+      buf = buf.slice(idx + 2);
+    }
+  }
+  if (buf.trim()) handleFrame(buf);
+
+  if (opts.usageSink) {
+    opts.usageSink.model = model;
+    opts.usageSink.tokens = Object.keys(usage).length ? usage : null;
+    opts.usageSink.costUsd = anthropicCost(model, usage);
+  }
+  const out = text.trim();
+  if (!out) throw new Error("anthropic: empty completion");
+  return out;
+}
+
 const ADAPTERS = {
   "claude-p": claudeP,
   openrouter,
   anthropic,
+};
+
+// Providers with a real streaming path. Everything else (openrouter, …) falls
+// back to complete() + a single onDelta carrying the whole reply.
+const STREAM_ADAPTERS = {
+  "claude-p": claudePStream,
+  anthropic: anthropicStream,
 };
 
 /**
@@ -178,4 +341,19 @@ function complete(prompt, opts = {}) {
   return fn(prompt, opts);
 }
 
-module.exports = { complete, ADAPTERS };
+/**
+ * completeStream(prompt, opts, onDelta) -> Promise<fullText>
+ * onDelta(textFragment) fires per text delta as the model writes. Providers
+ * without a streaming adapter resolve via complete() and fire onDelta once
+ * with the whole reply, so callers can treat every provider uniformly.
+ */
+async function completeStream(prompt, opts = {}, onDelta) {
+  const provider = opts.provider || "claude-p";
+  const fn = STREAM_ADAPTERS[provider];
+  if (fn) return fn(prompt, opts, onDelta);
+  const text = await complete(prompt, opts);
+  if (onDelta) { try { onDelta(text); } catch { /* consumer errors never kill the call */ } }
+  return text;
+}
+
+module.exports = { complete, completeStream, ADAPTERS };

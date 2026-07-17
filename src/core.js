@@ -153,6 +153,35 @@ async function timedComplete(label, prompt, opts, extra) {
 }
 
 /**
+ * Streaming twin of timedComplete: onDelta(fragment) fires as the model writes.
+ * Traces the FULL raw output (including [NEXT] delimiters) with the same record
+ * shape, so trace analysis doesn't care which path a call took.
+ */
+async function timedCompleteStream(label, prompt, opts, extra, onDelta) {
+  const start = Date.now();
+  let output = "", error = null;
+  const usage = {}; // adapters may fill { model, tokens, costUsd } via this sink
+  try {
+    output = await provider.completeStream(prompt, { ...opts, kind: label, usageSink: usage }, onDelta);
+    return output;
+  } catch (e) {
+    error = e.message;
+    throw e;
+  } finally {
+    tracer.log({
+      label,
+      model: usage.model || (opts && opts.provider) || "claude-p",
+      ms: Date.now() - start,
+      ...(usage.tokens ? { usage: usage.tokens, costUsd: usage.costUsd } : {}),
+      ...(extra || {}),
+      prompt,
+      output,
+      error,
+    });
+  }
+}
+
+/**
  * Strip a leaked "planning" preamble — leading sentences that talk ABOUT the
  * person (third person) or narrate the model's own intent ("I should…", "meet
  * him there") before it actually speaks TO them. Conservative: only strips
@@ -190,8 +219,15 @@ function stripMarkdown(text) {
     .replace(/^\s*[-*•]\s+/gm, "");
 }
 
-/** Trim accidental meta leakage from a reply. The prompt already forbids it; this is backup. */
-function sanitizeReply(text) {
+/**
+ * Trim accidental meta leakage from one chat-bubble chunk. The prompt already
+ * forbids it; this is backup. Every chunk gets the meta-line drop, markdown
+ * strip, wikilink/blank-line cleanup, and a [NEXT] leak-strip. stripPlanning
+ * runs on the FIRST chunk only — a planning preamble leaks at the start of the
+ * reply, and running it on later chunks would mangle legitimate short bubbles
+ * like "I'll be here."
+ */
+function sanitizeChunk(text, { first = false } = {}) {
   if (!text) return "";
   let lines = String(text).trim().split(/\r?\n/);
   // Drop leading meta lines like "Thinking:", "Note:", "(analysis ...)".
@@ -203,9 +239,77 @@ function sanitizeReply(text) {
   }
   let out = stripMarkdown(lines.join("\n"))
     .replace(/\[\[\s*(?:recall|consult)\s*:[^\]]*\]\]/gi, "")
+    .replace(/\[NEXT\]/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return stripPlanning(out);
+  return first ? stripPlanning(out) : out;
+}
+
+/** Trim accidental meta leakage from a whole reply (openers, onboarding, …). */
+function sanitizeReply(text) {
+  return sanitizeChunk(text, { first: true });
+}
+
+const MAX_CHUNKS = 6;
+
+/** Split a raw reply on the [NEXT] delimiter: trim, drop empties, cap 6. */
+function splitChunks(text) {
+  return String(text || "")
+    .split(/\s*\[NEXT\]\s*/g)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, MAX_CHUNKS);
+}
+
+const PLANNING_FALLBACK = "I'm right here with you. Take whatever time you need — we don't have to force anything.";
+
+/**
+ * Incremental [NEXT] splitter + per-chunk sanitizer — the single chunking code
+ * path for both the streaming and blocking respond flows (the only difference
+ * is whether onChunk fires as chunks complete or all at the end).
+ *
+ * feed(delta) buffers text and cuts a raw chunk each time the buffer contains
+ * the complete delimiter — nothing is emitted until the whole "[NEXT]" (or
+ * stream end) arrives, which handles the delimiter being split across deltas.
+ * end() flushes the remainder as the last chunk and returns the state.
+ *
+ * The FIRST sanitized chunk is gated by looksLikePlanning: if it trips, the
+ * canned fallback becomes the only chunk (leaked=true) and every subsequent
+ * chunk is dropped while the stream is left to finish.
+ */
+function makeChunkStream(onChunk) {
+  let buf = "";
+  const state = { chunks: [], leaked: false };
+  const emit = (raw) => {
+    if (state.leaked || state.chunks.length >= MAX_CHUNKS) return;
+    const text = sanitizeChunk(raw, { first: state.chunks.length === 0 });
+    if (!text) return; // skip empty-after-sanitize
+    if (state.chunks.length === 0 && looksLikePlanning(text)) {
+      state.leaked = true;
+      state.chunks.push(PLANNING_FALLBACK);
+      if (onChunk) { try { onChunk(PLANNING_FALLBACK, 0); } catch { /* hook errors never break the turn */ } }
+      return;
+    }
+    state.chunks.push(text);
+    if (onChunk) { try { onChunk(text, state.chunks.length - 1); } catch { /* hook errors never break the turn */ } }
+  };
+  return {
+    state,
+    feed(delta) {
+      buf += String(delta == null ? "" : delta);
+      let m;
+      while ((m = buf.match(/\[NEXT\]/)) !== null) {
+        emit(buf.slice(0, m.index));
+        buf = buf.slice(m.index + m[0].length);
+      }
+    },
+    end() {
+      const rest = buf;
+      buf = "";
+      emit(rest);
+      return state;
+    },
+  };
 }
 
 /**
@@ -299,7 +403,7 @@ function assemble(session, userMessage, active, opts = {}) {
   });
 }
 
-async function handleTurn(userMessage) {
+async function handleTurn(userMessage, hooks = {}) {
   const cfg = loadConfig() || {};
   const session = ensureSession();
   const crisis = safety.crisisCheck(userMessage);
@@ -326,15 +430,37 @@ async function handleTurn(userMessage) {
   if (crisis.flagged) opts.safetyDirective = safety.SAFETY_DIRECTIVE;
 
   const respondPrompt = assemble(session, userMessage, active, opts);
-  const raw = await timedComplete(session.mode === "explore" ? "explore-respond" : "respond", respondPrompt, { provider: cfg.provider, config: cfg }, {
+  const respondLabel = session.mode === "explore" ? "explore-respond" : "respond";
+  const respondOpts = { provider: cfg.provider, config: cfg };
+  const respondExtra = {
     activeLens: active.name, reference: active.reference, recall: recall.recalledSessionId, consult: recall.consulted, crisis: crisis.flagged, mode: session.mode,
-  });
-  let reply = sanitizeReply(raw) || "I'm here. Tell me a little more about what's on your mind.";
-  let leaked = false;
-  if (looksLikePlanning(reply)) {
-    leaked = true;
-    reply = "I'm right here with you. Take whatever time you need — we don't have to force anything.";
+  };
+
+  // One chunking code path for both flows: split the RAW respond output on
+  // [NEXT], sanitize per chunk. With hooks.onChunk the splitter is fed deltas
+  // as the model writes (bubbles stream out); without it the same splitter is
+  // fed the finished text — identical chunks either way.
+  const splitter = makeChunkStream(hooks.onChunk || null);
+  let raw;
+  if (hooks.onChunk) {
+    raw = await timedCompleteStream(respondLabel, respondPrompt, respondOpts, respondExtra, (delta) => splitter.feed(delta));
+    splitter.end();
+    // Safety net: the authoritative result can exist even when no deltas
+    // surfaced (adapter fallback edge). Re-feed the full text once.
+    if (!splitter.state.chunks.length && raw) { splitter.feed(raw); splitter.end(); }
+  } else {
+    raw = await timedComplete(respondLabel, respondPrompt, respondOpts, respondExtra);
+    splitter.feed(raw);
+    splitter.end();
   }
+
+  let chunks = splitter.state.chunks;
+  const leaked = splitter.state.leaked;
+  if (!chunks.length) {
+    chunks = ["I'm here. Tell me a little more about what's on your mind."];
+    if (hooks.onChunk) { try { hooks.onChunk(chunks[0], 0); } catch { /* hook errors never break the turn */ } }
+  }
+  const reply = chunks.join("\n\n");
 
   const trace = {
     activeLens: active.name,
@@ -350,14 +476,16 @@ async function handleTurn(userMessage) {
   tracer.log({ label: "turn", sessionId: session.id, userMessage, rawReply: raw, reply, leaked, ...trace });
 
   session.messages.push({ role: "user", content: userMessage });
-  session.messages.push({ role: "assistant", content: reply, trace });
+  // `content` stays the joined prose (renderTranscript and prompts read it);
+  // `chunks` preserves the bubble boundaries for the UI to restore.
+  session.messages.push({ role: "assistant", content: reply, chunks, trace });
   if (active.name) {
     session.activeSkill = active.name;
     if (!session.skillsUsed.includes(active.name)) session.skillsUsed.push(active.name);
   }
   saveCurrent(session);
 
-  return { reply, activeSkill: active.name, reference: active.reference, safety: crisis.flagged, close, suggestExplore, mode: session.mode, trace };
+  return { reply, chunks, activeSkill: active.name, reference: active.reference, safety: crisis.flagged, close, suggestExplore, mode: session.mode, trace };
 }
 
 // ─── Session end / consolidate ───────────────────────────────────────────────
@@ -735,4 +863,7 @@ module.exports = {
   currentSessionView,
   clearCurrent,
   parseJsonLoose,
+  splitChunks,
+  sanitizeChunk,
+  makeChunkStream,
 };

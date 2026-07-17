@@ -78,7 +78,8 @@ function buildRespondPrompt({
   parts.push(
     "\n\nReply now as the companion — speak DIRECTLY to them in the second person (\"you\"), warm and plain," +
       " one idea at a time. Your first words are the actual thing you'd say. Never describe them in the third" +
-      " person and never narrate your plan or intentions; output only what you'd say aloud."
+      " person and never narrate your plan or intentions; output only what you'd say aloud." +
+      " Break the reply into 1–4 short messages separated by a line containing only [NEXT]."
   );
 
   return parts.filter(Boolean).join("");
