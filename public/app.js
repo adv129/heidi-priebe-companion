@@ -1010,23 +1010,34 @@ function autoGrow(t) { t.style.height = "auto"; t.style.height = Math.min(t.scro
 // ─── Journey ──────────────────────────────────────────────────────────────────
 
 const JOURNEY_SECTIONS = [
+  ["now", "Now"],
   ["timeline", "Timeline"],
   ["patterns", "Patterns"],
-  ["experiments", "Experiments"],
-  ["homework", "Homework"],
   ["goals", "Goals"],
   ["you", "About you"],
   ["sessions", "Sessions"],
 ];
 
-// Client-side relative time for display ("3 days ago"); handles stamp ids,
-// plain dates, and ISO. Purely cosmetic — the agent's time sense is server-side.
-function relTime(s) {
+// Whole days from a stamp id / date string to today: positive = past, negative
+// = upcoming, null = unparseable. Purely cosmetic — time sense is server-side.
+function daysAgo(s) {
   const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})-(\d{2})-(\d{2}))?/);
-  if (!m) return "";
+  if (!m) return null;
   const then = new Date(+m[1], +m[2] - 1, +m[3]);
   const now = new Date();
-  const d = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - then) / 86400000);
+  return Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - then) / 86400000);
+}
+
+function trunc(s, n) {
+  const t = String(s == null ? "" : s);
+  return t.length > n ? t.slice(0, n).trim() + "…" : t;
+}
+
+// Client-side relative time for display ("3 days ago"); handles stamp ids,
+// plain dates, and ISO.
+function relTime(s) {
+  const d = daysAgo(s);
+  if (d === null) return "";
   if (d === 0) return "today";
   if (d === 1) return "yesterday";
   if (d === -1) return "tomorrow";
@@ -1040,7 +1051,9 @@ const HYP_STATUS_WORDS = { forming: "just forming", testing: "testing together",
 const GOAL_STATUS_WORDS = { active: "active", progressing: "progressing", stalled: "resting", achieved: "achieved" };
 
 async function renderJourney(section) {
-  const sec = JOURNEY_SECTIONS.some(([k]) => k === section) ? section : "timeline";
+  // Old experiments/homework deep links fall through to "now" — their content
+  // lives in the thread cards there.
+  const sec = JOURNEY_SECTIONS.some(([k]) => k === section) ? section : "now";
   app.innerHTML = `<h1>Journey</h1>
     <p class="sub">What we're learning together, and how it's moving over time.</p>
     <div class="journey-pills" id="jpills"></div>
@@ -1052,10 +1065,9 @@ async function renderJourney(section) {
   } catch (e) { body.innerHTML = `<p class="muted">Couldn't load: ${esc(e.message)}</p>`; return; }
 
   const renderers = {
+    now: () => renderNow(body, data, timeline.entries || [], select),
     timeline: () => renderJourneyTimeline(body, timeline.entries || []),
     patterns: () => renderPatterns(body, (data.profile || {}).hypotheses || [], () => renderJourney("patterns")),
-    experiments: () => renderExperiments(body, data.experiments || []),
-    homework: () => renderHomework(body, (data.profile || {}).assignments || [], (data.profile || {}).hypotheses || []),
     goals: () => renderGoals(body, (data.profile || {}).goals || []),
     you: () => renderProfileYou(body, data.profile || {}),
     sessions: () => renderSessionsList(body, data.sessions || []),
@@ -1063,18 +1075,182 @@ async function renderJourney(section) {
 
   let current = sec;
   const pills = app.querySelector("#jpills");
+  const select = (k) => {
+    current = k;
+    history.replaceState(null, "", "#/journey/" + current); // deep-linkable, no refetch
+    draw();
+    renderers[current]();
+  };
   const draw = () => {
     pills.innerHTML = JOURNEY_SECTIONS.map(([k, label]) =>
       `<span class="mc-chip ${current === k ? "sel" : ""}" data-sec="${k}">${label}</span>`).join("");
-    pills.querySelectorAll("[data-sec]").forEach((el) => el.addEventListener("click", () => {
-      current = el.dataset.sec;
-      history.replaceState(null, "", "#/journey/" + current); // deep-linkable, no refetch
-      draw();
-      renderers[current]();
-    }));
+    pills.querySelectorAll("[data-sec]").forEach((el) => el.addEventListener("click", () => select(el.dataset.sec)));
   };
   draw();
   renderers[current]();
+}
+
+// ── The "Now" landing view: one thread per active pattern, with the
+// experiments and homework linked to it nested underneath. Pure aggregation
+// over what /api/memory and /api/timeline already return — no new data.
+
+const RECENT_DAYS = 14;   // concluded experiments / reported homework stay in-thread this long
+const MOTION_DAYS = 30;   // goal movement / upcoming events horizon
+
+/**
+ * Group active hypotheses with their linked experiments + homework.
+ * Order: supported → testing → forming (→ revised), most recently updated
+ * first within a group; capped at 4 cards. "Revised" counts as active only
+ * while something open/running still hangs off it; retired never shows.
+ */
+function buildThreads(data) {
+  const profile = data.profile || {};
+  const hyps = profile.hypotheses || [];
+  const experiments = data.experiments || [];
+  const assignments = profile.assignments || [];
+  const recent = (at) => { const d = daysAgo(at); return d !== null && d >= 0 && d <= RECENT_DAYS; };
+
+  const expsFor = (id) => experiments.filter((e) => e.hypothesisId === id);
+  const hwFor = (id) => assignments.filter((a) => a.linkedHypothesisId === id);
+
+  const active = hyps.filter((h) => {
+    if (h.status === "supported" || h.status === "testing" || h.status === "forming") return true;
+    if (h.status === "revised") {
+      return expsFor(h.id).some((e) => e.status === "running") || hwFor(h.id).some((a) => a.status === "open");
+    }
+    return false; // retired (and anything unknown) never threads
+  });
+  const ORDER = { supported: 0, testing: 1, forming: 2, revised: 3 };
+  active.sort((a, b) =>
+    (ORDER[a.status] ?? 9) - (ORDER[b.status] ?? 9) || String(b.updatedAt).localeCompare(String(a.updatedAt)));
+
+  const shown = active.slice(0, 4).map((h) => ({
+    hyp: h,
+    experiments: expsFor(h.id).filter((e) =>
+      e.status === "running" || e.status === "proposed" ||
+      (e.status === "concluded" && e.outcome && recent(e.outcome.at))),
+    homework: hwFor(h.id).filter((a) =>
+      a.status === "open" || (a.status === "reported" && a.report && recent(a.report.at))),
+  }));
+  return { shown, moreCount: active.length - shown.length };
+}
+
+const NOW_SIGNAL_WORDS = { supports: "fits the pattern", complicates: "doesn't quite fit", unclear: "hard to say" };
+
+function nowExpRow(e) {
+  if (e.status === "running") {
+    const day = (daysAgo(e.startedAt) ?? 0) + 1;
+    const last = (e.checkIns || []).slice(-1)[0];
+    return `<div class="thread-row"><span class="t-kind exp">Experiment</span><span class="t-body">day ${day}: trying <strong>${esc(e.theReplacement)}</strong> instead of ${esc(e.thePattern)} — ${last ? `last check-in: ${esc(String(last.verdict).replace(/-/g, " "))}` : "no check-in yet"}</span></div>`;
+  }
+  if (e.status === "concluded") {
+    return `<div class="thread-row"><span class="t-kind exp">Experiment</span><span class="t-body">concluded: ${esc(trunc(e.outcome && e.outcome.summary, 110))}</span></div>`;
+  }
+  return `<div class="thread-row"><span class="t-kind exp">Experiment</span><span class="t-body">proposed — waiting on you: “${esc(trunc(e.theReplacement, 70))}”</span></div>`;
+}
+
+function nowHwRow(a) {
+  if (a.status === "reported" && a.report) {
+    const signal = NOW_SIGNAL_WORDS[a.report.hypothesisSignal] || NOW_SIGNAL_WORDS.unclear;
+    return `<div class="thread-row"><span class="t-kind hw">Homework</span><span class="t-body">reported: “${esc(trunc(a.report.findings, 80))}” — ${signal}</span></div>`;
+  }
+  return `<div class="thread-row"><span class="t-kind hw">Homework</span><span class="t-body">open: ${esc(a.text)}</span></div>`;
+}
+
+function renderNow(body, data, tlEntries, select) {
+  const profile = data.profile || {};
+  const experiments = data.experiments || [];
+  const assignments = profile.assignments || [];
+  const { shown, moreCount } = buildThreads(data);
+
+  // ── Header counts ──
+  const runningCount = experiments.filter((e) => e.status === "running").length;
+  const openHwCount = assignments.filter((a) => a.status === "open").length;
+  const counts = [];
+  if (shown.length) counts.push(`${shown.length} thread${shown.length === 1 ? "" : "s"} in motion`);
+  if (runningCount) counts.push(`${runningCount} experiment${runningCount === 1 ? "" : "s"} running`);
+  if (openHwCount) counts.push(`${openHwCount} homework open`);
+
+  // ── Also in motion ──
+  const shownIds = new Set(shown.map((t) => t.hyp.id));
+  // Anything active that isn't visible inside a thread card (dangling link,
+  // retired parent, or a pattern beyond the cap) surfaces here instead.
+  const looseExps = experiments.filter((e) => e.status === "running" && !shownIds.has(e.hypothesisId));
+  const looseHw = assignments.filter((a) => a.status === "open" && !shownIds.has(a.linkedHypothesisId));
+  const movedGoals = (profile.goals || []).filter((g) => {
+    if (!g || typeof g !== "object" || !(g.progress || []).length) return false;
+    const d = daysAgo(g.progress[g.progress.length - 1].at);
+    return d !== null && d >= 0 && d <= MOTION_DAYS;
+  });
+  const upcoming = tlEntries.filter((e) => {
+    if (e.type !== "upcoming") return false;
+    const d = daysAgo(e.at);
+    return d !== null && d <= 0 && d >= -MOTION_DAYS;
+  });
+
+  const nothingInMotion = !shown.length && !looseExps.length && !looseHw.length && !movedGoals.length && !upcoming.length;
+
+  // ── Compose ──
+  let html = `<div class="now-head">
+    <h2 class="now-title">Right now</h2>
+    ${counts.length ? `<p class="now-counts">${esc(counts.join(" · "))}</p>` : ""}
+  </div>`;
+
+  if (nothingInMotion) {
+    html += `<div class="card"><p class="muted">Nothing in motion yet. As we talk, patterns we notice together — and anything you agree to try — will gather here.</p></div>`;
+  }
+
+  html += shown.map((t) => {
+    const h = t.hyp;
+    const rows = [...t.experiments.map(nowExpRow), ...t.homework.map(nowHwRow)];
+    return `<div class="card thread-card">
+      <div class="thread-head">
+        <p class="thread-statement">${esc(h.statement)}</p>
+        <span class="tag status-${esc(h.status)}">${esc(HYP_STATUS_WORDS[h.status] || h.status)}</span>
+      </div>
+      ${rows.length ? `<div class="thread-rows">${rows.join("")}</div>` : ""}
+      <div class="thread-actions"><button data-th-talk="${esc(h.statement)}">Talk about this →</button></div>
+    </div>`;
+  }).join("");
+
+  if (moreCount > 0) {
+    html += `<button class="now-more" data-go="patterns">+${moreCount} more pattern${moreCount === 1 ? "" : "s"} →</button>`;
+  }
+
+  const alsoRows = [
+    ...movedGoals.map((g) => {
+      const last = g.progress[g.progress.length - 1];
+      const word = last.movement === "holding" ? "holding recently" : `moved ${esc(last.movement)} recently`;
+      return `<div class="thread-row"><span class="t-kind goal">Goal</span><span class="t-body">${esc(g.text)} — ${word}</span></div>`;
+    }),
+    ...upcoming.map((e) => {
+      const away = -daysAgo(e.at);
+      const rel = away === 0 ? "today" : away === 1 ? "tomorrow" : `${away} days away`;
+      return `<div class="thread-row"><span class="t-kind ev">Coming up</span><span class="t-body">${esc(e.title)} — ${esc(String(e.at).slice(0, 10))} (${rel})</span></div>`;
+    }),
+    ...looseExps.map(nowExpRow),
+    ...looseHw.map(nowHwRow),
+  ];
+  if (alsoRows.length) {
+    html += `<div class="now-label">Also in motion</div>
+      <div class="card also-card">${alsoRows.join("")}</div>`;
+  }
+
+  html += `<div class="now-label">Dig deeper</div>
+    <div class="dig-row">
+      <button class="mc-chip" data-go="timeline">Timeline</button>
+      <button class="mc-chip" data-go="patterns">All patterns</button>
+      <button class="mc-chip" data-go="goals">Goals</button>
+      <button class="mc-chip" data-go="sessions">Sessions</button>
+      <button class="mc-chip" data-go="you">About you</button>
+    </div>`;
+
+  body.innerHTML = html;
+  body.querySelectorAll("[data-go]").forEach((el) => el.addEventListener("click", () => select(el.dataset.go)));
+  body.querySelectorAll("[data-th-talk]").forEach((btn) => btn.addEventListener("click", () => {
+    sessionStorage.setItem("composerPrefill", `I want to dig into the pattern we've been noticing — "${btn.dataset.thTalk}".`);
+    location.hash = "#/chat";
+  }));
 }
 
 function renderJourneyTimeline(body, entries) {
@@ -1181,80 +1357,6 @@ function renderPatterns(body, hypotheses, refresh) {
     btn.disabled = true;
     try { await api("POST", `/api/memory/hypothesis/${encodeURIComponent(btn.dataset.hypId)}/vote`, { vote: btn.dataset.hypVote }); refresh(); }
     catch (e) { btn.disabled = false; alert("Couldn't record that: " + e.message); }
-  }));
-}
-
-function renderExperiments(body, experiments) {
-  if (!experiments.length) {
-    body.innerHTML = `<div class="card"><p class="muted">No experiments yet. Once a pattern is well understood and you want to change it, we'll design small experiments together — new responses to try in place of old patterns.</p></div>`;
-    return;
-  }
-  const activeExps = experiments.filter((e) => e.status !== "concluded");
-  const done = experiments.filter((e) => e.status === "concluded");
-  const card = (e) => {
-    const last = (e.checkIns || []).slice(-1)[0];
-    const meta = [
-      e.startedAt ? `started ${relTime(e.startedAt)}` : `proposed ${relTime(e.proposedAt)}`,
-      (e.checkIns || []).length ? `${e.checkIns.length} check-in${e.checkIns.length === 1 ? "" : "s"}` : "",
-      last ? `last: “${last.note}” (${last.verdict})` : "",
-    ].filter(Boolean).join(" · ");
-    return `<div class="card exp-card">
-      <div class="pill-list">
-        <span class="tag status-${esc(e.status)}">${esc(e.status)}</span>
-        ${e.strategy ? `<span class="tag">${esc(e.strategy)}</span>` : ""}
-        ${e.lens ? `<span class="tag">${esc(shortSkill(e.lens))}</span>` : ""}
-      </div>
-      <p class="exp-swap"><span class="muted">instead of</span> ${esc(e.thePattern)}<br><span class="muted">trying</span> <strong>${esc(e.theReplacement)}</strong></p>
-      <div class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.82rem">${esc(meta)}</div>
-      ${e.outcome ? `<p style="margin-bottom:0"><strong>What we learned:</strong> ${esc(e.outcome.summary)}${e.outcome.keeping === true ? " (keeping it)" : e.outcome.keeping === "adapted" ? " (adapted it)" : " (let it go)"}</p>` : `
-      <div style="margin-top:10px"><button data-exp-talk="${esc(e.theReplacement)}">Talk about this</button></div>`}
-    </div>`;
-  };
-  body.innerHTML = activeExps.map(card).join("")
-    + (done.length ? `<h2 style="font-size:1.05rem">Wrapped up</h2>` + done.map(card).join("") : "");
-  body.querySelectorAll("[data-exp-talk]").forEach((btn) => btn.addEventListener("click", () => {
-    sessionStorage.setItem("composerPrefill", `I want to check in on the experiment we set up — "${btn.dataset.expTalk}".`);
-    location.hash = "#/chat";
-  }));
-}
-
-const HW_TYPE_WORDS = { notice: "noticing", action: "action", reflection: "reflection" };
-const HW_STATUS_WORDS = { open: "open", reported: "reported back", dropped: "set aside" };
-const HW_SIGNAL_WORDS = { supports: "it fits the pattern", complicates: "it complicates the pattern", unclear: "hard to say yet" };
-
-function renderHomework(body, assignments, hypotheses) {
-  if (!assignments.length) {
-    body.innerHTML = `<div class="card"><p class="muted">No homework yet. When something is worth carrying into real life — something to notice, a small thing to try, or a question to sit with — it shows up here. Always your call to take it on.</p></div>`;
-    return;
-  }
-  const open = assignments.filter((a) => a.status === "open");
-  const done = assignments.filter((a) => a.status !== "open");
-  const card = (a) => {
-    const type = a.type || "notice";
-    const hyp = a.linkedHypothesisId ? hypotheses.find((h) => h.id === a.linkedHypothesisId) : null;
-    return `<div class="card exp-card">
-      <div class="pill-list">
-        <span class="tag">${esc(HW_TYPE_WORDS[type] || type)}</span>
-        <span class="tag status-${esc(a.status)}">${esc(HW_STATUS_WORDS[a.status] || a.status)}</span>
-      </div>
-      <p class="exp-swap"><strong>${esc(a.text)}</strong></p>
-      ${a.whatToNotice && a.whatToNotice !== a.text ? `<p class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.86rem">watching for: ${esc(a.whatToNotice)}</p>` : ""}
-      ${hyp ? `<div class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.82rem">tied to: “${esc(hyp.statement)}”</div>` : ""}
-      <div class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.82rem">given ${esc(relTime(a.givenAt))}</div>
-      ${a.report ? `<p style="margin-bottom:0"><strong>What you noticed:</strong> ${esc(a.report.findings || "")}${a.report.hypothesisSignal ? ` <span class="muted">(${esc(HW_SIGNAL_WORDS[a.report.hypothesisSignal] || a.report.hypothesisSignal)})</span>` : ""}</p>` : a.status === "open" ? `
-      <div style="margin-top:10px"><button data-hw-talk="${esc(a.text)}" data-hw-type="${esc(type)}">Talk about this</button></div>` : ""}
-    </div>`;
-  };
-  body.innerHTML = open.map(card).join("")
-    + (done.length ? `<h2 style="font-size:1.05rem">Past homework</h2>` + done.map(card).join("") : "");
-  body.querySelectorAll("[data-hw-talk]").forEach((btn) => btn.addEventListener("click", () => {
-    const messages = {
-      notice: `I want to report back on what I was noticing: "${btn.dataset.hwTalk}"`,
-      action: `I want to tell you how it went — the thing I said I'd try: "${btn.dataset.hwTalk}"`,
-      reflection: `I want to share what came up when I sat with: "${btn.dataset.hwTalk}"`,
-    };
-    sessionStorage.setItem("composerPrefill", messages[btn.dataset.hwType] || messages.notice);
-    location.hash = "#/chat";
   }));
 }
 
