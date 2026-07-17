@@ -11,6 +11,7 @@
     "start": "node src/server.js",
     "serve": "node src/server.js",
     "manifest": "node src/skills.js --emit-manifest",
+    "lint:skills": "node scripts/lint-skills.js",
     "snapshot": "node scripts/snapshot.js"
   },
   "dependencies": {}
