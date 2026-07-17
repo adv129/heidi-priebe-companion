@@ -468,7 +468,15 @@ function applyHypothesisUpdates(updates, sessionId) {
         h.updatedAt = at;
         if (sc.status === "retired" && sc.why) h.evidence.push({ at, sessionId, note: String(sc.why), kind: "against" });
       }
-      if (["low", "medium", "high"].includes(sc.confidence)) h.confidence = sc.confidence;
+      if (["low", "medium", "high"].includes(sc.confidence) && sc.confidence !== h.confidence) {
+        // Direction + date of the last confidence move — the pre-session brief
+        // reports "confidence rising/falling" only when it changed in-window.
+        const rank = { low: 0, medium: 1, high: 2 };
+        h.confidenceTrend = rank[sc.confidence] > rank[h.confidence] ? "rising" : "falling";
+        h.confidenceChangedAt = at;
+        h.confidence = sc.confidence;
+        h.updatedAt = at;
+      }
     } catch {}
   }
   saveProfile(p);

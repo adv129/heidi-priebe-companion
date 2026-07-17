@@ -1490,7 +1490,7 @@ const PRESET_META = {
   },
   "pre-session": {
     name: "Pre-session update",
-    desc: "Catch your therapist up on a chosen window: sessions, pattern movement, goals, experiments, and life events since they last heard from you.",
+    desc: "A quick 1–2 page update your therapist can read in two minutes: how the picture has changed, what's happened in your life, and where there's movement.",
   },
 };
 
@@ -1911,6 +1911,16 @@ function briefSectionParts(sec) {
     }
     case "window-summary":
       return { intro: P(sec.line) };
+    // ── pre-session: dense single-line sections ──
+    case "understanding":
+      return {
+        intro: sec.items && sec.items.length ? P(sec.framing, "b-framing") : "",
+        items: (sec.items || []).map((it) => ({ id: it.id, html: `<p class="b-line">${esc(it.line)}</p>` })),
+      };
+    case "happened":
+    case "progress":
+      return { items: (sec.items || []).map((it) => ({ id: it.id, html: `<p class="b-line">${esc(it.line)}</p>` })) };
+    // ── legacy pre-session sections (old saved briefs must still render) ──
     case "sessions": {
       const items = [];
       for (const wk of sec.weeks || []) {
