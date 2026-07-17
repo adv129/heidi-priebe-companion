@@ -30,7 +30,7 @@ relationship.
 3. **Track the flip:** what happened in the 24h before the switch from
    craving to repulsion? Usually an intimacy spike or a perceived slight.
 4. **Trauma-informed pacing:** if fear responses, flashbacks, or abuse
-   history surface, move to 05 and reinforce professional support. FA healing
+   history surface, move to complex-trauma-reparenting and reinforce professional support. FA healing
    most benefits from a therapist.
 5. Self-compassion over self-disgust for the pattern — FA people typically
    hate their own hot/cold behavior, which layers shame on trauma (→ toxic-shame).

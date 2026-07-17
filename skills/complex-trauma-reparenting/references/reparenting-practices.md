@@ -10,8 +10,8 @@ yourself, on purpose, until it's automatic.
 
 ## 2. Attunement (the parent who notices)
 - Daily check-in: "What are you feeling? What do you need?" — and WAIT for
-  the answer (→ emotional-processing somatic-basics).
-- Believing your own signals instead of overriding them (→ self-abandonment self-trust).
+  the answer (→ emotional-processing/somatic-basics.md).
+- Believing your own signals instead of overriding them (→ self-abandonment/self-trust.md).
 
 ## 3. Comfort (the parent who soothes)
 - A real repertoire, written down: specific music, warmth, people, motion,
@@ -30,5 +30,5 @@ Reparenting works only alongside grieving: no amount of self-parenting
 retroactively gives you the childhood. Part of the work is mourning what
 will never be received from the original sources — including retiring the
 hope that the parents will finally change (→ grief-and-letting-go). Skipping this grief turns
-reparenting into another self-improvement project (→ emotional-processing repression-styles,
+reparenting into another self-improvement project (→ emotional-processing/repression-styles.md,
 "The Doer").

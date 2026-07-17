@@ -73,7 +73,7 @@ src/       server.js · core.js (turn pipeline) · provider.js · skills.js · m
            timeaware.js (time context) · safety.js · templates/
 public/    index.html · app.js · style.css   (the SPA: Talk · Journey · Settings · Therapist)
 skills/    the knowledge base (one folder per skill: SKILL.md + references/)
-skills.json  machine-readable manifest (regenerate: npm run manifest)
+           (npm run manifest emits a skills.json snapshot — generated, gitignored)
 memory/    profile.json (incl. hypotheses + assignments) · graph.json · sessions/
            experiments.json · timeline.json · briefs.json   (local, gitignored, sensitive)
 ```

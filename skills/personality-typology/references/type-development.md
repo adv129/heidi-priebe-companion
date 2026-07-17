@@ -33,5 +33,5 @@ the same: deliberately feed the auxiliary function.
 
 ## The caveat that keeps this honest
 Chronic grip states usually mean the LIFE is wrong, not the type — unmet
-needs, self-abandonment (→ self-abandonment), unprocessed material (→ emotional-processing/05). Type
+needs, self-abandonment (→ self-abandonment), unprocessed material (→ emotional-processing or complex-trauma-reparenting). Type
 locates the fault line; the other skills do the repair.

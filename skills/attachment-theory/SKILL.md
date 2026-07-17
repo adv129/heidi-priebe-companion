@@ -40,6 +40,9 @@ the goal is **earned secure attachment**.
    practice meeting it directly (self or explicit ask), tolerate the
    discomfort of the new behavior. Repeat until the nervous system updates.
 5. Never use this framework to prosecute a partner in absentia.
+6. Fearful-avoidant patterns are often trauma-linked — when childhood fear
+   or abuse surfaces, say plainly that this depth deserves a licensed
+   therapist alongside these conversations.
 
 ## References index
 | Need | File |

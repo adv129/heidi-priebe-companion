@@ -22,7 +22,8 @@ bounce off shame; accurate kindness lands.
 Shame's fuel is secrecy. Build tolerance for being seen gradually:
 1. Write the shameful thing privately, in full.
 2. Say it aloud, alone.
-3. Tell an AI or journal-with-response (low stakes).
+3. Tell an AI or journal-with-response (low stakes) — a practice step, not
+   a destination; the medicine is a human witness.
 4. Tell ONE vetted safe person — someone with demonstrated non-judgment.
 5. Let it become ordinary information about you.
 Vet before disclosing: sharing shame with a shaming person re-traumatizes.

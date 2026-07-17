@@ -28,10 +28,9 @@ change in how situations feel.
 3. **Locate & allow** — put attention IN the sensation, not on the story.
    60–90 seconds of pure allowing often moves more than an hour of analysis.
    Emotion tolerated without resistance tends to crest and fall like a wave.
-4. **Listen** — every emotion carries a message: sadness = something matters
-   was lost; anger = a boundary or value was crossed; fear = perceived
-   threat; shame = perceived exposure of a 'flaw' (→ toxic-shame); loneliness = need
-   for connection unmet.
+4. **Listen** — every emotion carries a message about a need or boundary;
+   decode it rather than trying to fix or dismiss the feeling itself
+   (full decoder → emotion-messages.md).
 5. **Respond** — the need behind the message gets an action: a boundary,
    an ask, a grief ritual, comfort. Feeling without responding leaks;
    responding without feeling misfires.

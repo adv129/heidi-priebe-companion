@@ -53,15 +53,15 @@ Then load exactly one `SKILL.md` from the routing table.
 
 | They say things like... | Load |
 |---|---|
-| "Why do I panic when they pull away," "I always pick unavailable people," "hot and cold," "fear of being left / being trapped" | `01-attachment-theory` |
-| "Something is wrong with me," "if people really knew me," relentless inner critic, perfectionism, chronic hiding | `02-toxic-shame` |
-| "I don't know who I am anymore," "I always put everyone first," resentment from overgiving, can't identify own wants | `03-self-abandonment` |
-| "I understand it all but nothing changes," "I feel numb," "how do I actually feel my feelings" | `04-emotional-processing` |
-| "My childhood was rough," huge reactions to small triggers, emotional flashbacks, "reparenting," savage self-attack under stress | `05-complex-trauma-reparenting` |
-| Breakup, death, ending, "I can't move on," grieving a childhood/parent they never had | `06-grief-and-letting-go` |
-| "I can't say no," codependency, enmeshed family, walls up with everyone, conflict avoidance | `07-boundaries-and-relationships` |
-| "I keep rationalizing," staying in something that contradicts their values, "am I lying to myself?" | `08-self-honesty-and-cognitive-dissonance` |
-| "What's my MBTI," cognitive functions, "I'm an INFP and..." | `09-personality-typology` |
+| "Why do I panic when they pull away," "I always pick unavailable people," "hot and cold," "fear of being left / being trapped" | `attachment-theory` |
+| "Something is wrong with me," "if people really knew me," relentless inner critic, perfectionism, chronic hiding | `toxic-shame` |
+| "I don't know who I am anymore," "I always put everyone first," resentment from overgiving, can't identify own wants | `self-abandonment` |
+| "I understand it all but nothing changes," "I feel numb," "how do I actually feel my feelings" | `emotional-processing` |
+| "My childhood was rough," huge reactions to small triggers, emotional flashbacks, "reparenting," savage self-attack under stress | `complex-trauma-reparenting` |
+| Breakup, death, ending, "I can't move on," grieving a childhood/parent they never had | `grief-and-letting-go` |
+| "I can't say no," codependency, enmeshed family, walls up with everyone, conflict avoidance | `boundaries-and-relationships` |
+| "I keep rationalizing," staying in something that contradicts their values, "am I lying to myself?" | `self-honesty-and-cognitive-dissonance` |
+| "What's my MBTI," cognitive functions, "I'm an INFP and..." | `personality-typology` |
 
 Ambiguous? Ask one narrowing question instead of loading two skills.
 

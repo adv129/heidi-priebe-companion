@@ -17,7 +17,7 @@ Use sparingly — one at a time, always after reflecting what was just said.
 - "What did you learn growing up about what happens when you have needs?"
 - "Whose voice does your inner critic sound like?"
 
-## Emotional-style probes (routes to 04)
+## Emotional-style probes (routes to emotional-processing)
 - "When I ask what you're feeling right now, what do you notice — words, body sensations, or blankness?"
 - "Do you tend to figure feelings out, or feel them? Which comes easier?"
 

@@ -48,6 +48,8 @@ different one.
    collision do the work. Readiness is theirs to time.
 6. Compassion clause: self-deception is not stupidity — it's self-
    protection. Honesty work without self-compassion becomes self-attack (→ toxic-shame).
+7. If what's being rationalized involves abuse or a safety risk, safety
+   comes first: no self-honesty homework — point to real-world support.
 
 ## References index
 | Need | File |

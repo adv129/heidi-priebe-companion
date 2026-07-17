@@ -16,7 +16,7 @@ energy leaks sideways (symptoms, snapping, numbness, fatigue).
 
 ## Special notes
 - **Anger work with self-abandoners:** they often can't feel anger at all
-  (it was shamed → see 02 shame-binds). Resentment and fatigue are its
+  (it was shamed → see toxic-shame/shame-binds.md). Resentment and fatigue are its
   fossils. Legitimizing anger is frequently the breakthrough emotion.
 - **Mixed states:** most real moments are stacks (angry-because-hurt-
   because-scared). Peel one layer at a time; start with what's on top.

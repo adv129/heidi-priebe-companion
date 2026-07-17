@@ -44,6 +44,8 @@ disregard you — the outer relationship mirrors the inner one.
 5. **Reintroduce preference:** people deep in self-abandonment genuinely
    don't know what they want. Start absurdly small: what do YOU want for
    lunch, which movie, which route. Preference is a muscle.
+6. If identity work tips into despair, an emptiness that frightens them, or
+   depersonalization, pause the framework and point to professional support.
 
 ## References index
 | Need | File |

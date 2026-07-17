@@ -70,11 +70,17 @@ function loadManifest({ fresh = false } = {}) {
   for (const name of entries) {
     const skillFile = path.join(SKILLS_DIR, name, "SKILL.md");
     if (!fs.existsSync(skillFile)) continue;
-    const { meta } = parseFrontmatter(fs.readFileSync(skillFile, "utf8"));
+    const { meta, body } = parseFrontmatter(fs.readFileSync(skillFile, "utf8"));
     let references = [];
     const refDir = path.join(SKILLS_DIR, name, "references");
     if (fs.existsSync(refDir)) {
       references = fs.readdirSync(refDir).filter((f) => f.endsWith(".md")).sort();
+    }
+    // One-liners from the SKILL.md "References index" table (| Need | `references/file.md` |)
+    // — these are what the router sees when deciding whether to pull a reference.
+    const referenceDescriptions = {};
+    for (const row of body.matchAll(/\|\s*([^|\n]+?)\s*\|\s*`references\/([\w.-]+\.md)`\s*\|/g)) {
+      referenceDescriptions[row[2]] = row[1];
     }
     skills.push({
       name: meta.name || name,
@@ -82,6 +88,7 @@ function loadManifest({ fresh = false } = {}) {
       isCore: name === AGENT_CORE,
       description: meta.description || "",
       references,
+      referenceDescriptions,
       hasReferences: references.length > 0,
     });
   }
@@ -130,11 +137,33 @@ function readReference(name, refFile) {
   return fs.readFileSync(p, "utf8").trim();
 }
 
-/** Compact "name — description" lines for the router prompt. */
+/**
+ * Compact catalog for the router prompt: one "name — description" line per
+ * skill, plus its reference files (with their References-index one-liners) so
+ * the router can actually pick a valid `reference` filename.
+ */
 function routerCatalog() {
   return topicalSkills()
-    .map((s) => `- ${s.name}: ${s.description}`)
+    .map((s) => {
+      const lines = [`- ${s.name}: ${s.description}`];
+      if (s.references.length) {
+        const refs = s.references
+          .map((f) => (s.referenceDescriptions[f] ? `${f} — ${s.referenceDescriptions[f]}` : f))
+          .join("\n    ");
+        lines.push(`  references (loadable on demand):\n    ${refs}`);
+      }
+      return lines.join("\n");
+    })
     .join("\n");
+}
+
+/** readReference, but returns null instead of throwing (for optional context). */
+function tryReadReference(name, refFile) {
+  try {
+    return readReference(name, refFile);
+  } catch {
+    return null;
+  }
 }
 
 // --- Manifest snapshot (for external consumers / debugging) ----------------
@@ -164,6 +193,7 @@ module.exports = {
   readSkillBody,
   readAgentCore,
   readReference,
+  tryReadReference,
   routerCatalog,
   emitManifestFile,
 };

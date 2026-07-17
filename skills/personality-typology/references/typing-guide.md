@@ -23,7 +23,7 @@ verify against their inner experience — they're the only witness to it.
 - INFP ↔ INFJ (Fi-Ne vs Ni-Fe — ask the conflict question)
 - INTP ↔ INTJ (Ti-Ne vs Ni-Te — airtight-logic vs works-in-world)
 - Anxious anyone → tests as I and N inflated; trauma responses mimic type
-  (hypervigilance reads as Ni, fawning reads as Fe → route to 01/05)
+  (hypervigilance reads as Ni, fawning reads as Fe → route to attachment-theory or complex-trauma-reparenting)
 - Depressed extraverts type as introverts.
 
 ## Ethics

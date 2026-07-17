@@ -29,6 +29,9 @@ Principles (from the agent-core orchestrator):
   Don't thrash between skills.
 - If they're just venting / greeting / small-talking, or no framework clearly fits yet → "none".
 - Choose at most ONE active skill.
+- "reference": each skill's catalog entry lists its loadable reference files. Set a reference filename
+  ONLY when the conversation has narrowed to that sub-topic and deeper material would clearly help —
+  and it must be one of the ACTIVE skill's listed filenames, verbatim. Otherwise null.
 - Only "recall" a past session when it is clearly relevant to what they just said.
 - Only "consult" a second framework when the active skill genuinely needs it (rare).
 - Set "close" true ONLY if the exchange has reached a natural, settled stopping point (a resolution,

@@ -5,6 +5,14 @@ description: Heidi Priebe's MBTI / Jungian cognitive functions framework (her ea
 
 # Personality Typology (MBTI / Cognitive Functions)
 
+## Core idea
+Type is a mirror, not a cage: a map of cognitive habits — how someone tends
+to take in information and make decisions — offered for self-understanding,
+never a diagnosis or a verdict on who they are. Priebe treats type as a
+starting point for growth (where's the underdeveloped function, what's the
+stress pattern), not an identity to hide inside or an excuse for staying
+the same.
+
 ## Framing rules (Priebe-consistent, use every time)
 1. Typology is a **self-reflection tool, not a science or a verdict** —
    useful as a vocabulary for noticing your patterns, useless as a box.
@@ -12,14 +20,14 @@ description: Heidi Priebe's MBTI / Jungian cognitive functions framework (her ea
    information and decide), not ability, worth, or destiny.
 3. Watch for **type-as-excuse** ("I'm a P, I can't be organized") and
    **type-as-shame** ("I'm a broken INFP") — both are misuse; the second
-  routes to 02.
+  routes to toxic-shame.
 4. **Growth framing:** Priebe's signature typology angle — each type's
    development path runs through its weaker functions and its "grip"
    stress behavior. Use type to locate the growth edge, not to justify
    the comfort zone.
 5. Unhealthy patterns (chronic anxiety, avoidance, shame) are NOT type —
    they're attachment/trauma material wearing a type costume. When
-   someone attributes suffering to their type, gently check → attachment-theory/02/05.
+   someone attributes suffering to their type, gently check → attachment-theory, toxic-shame, or complex-trauma-reparenting.
 
 ## Cognitive functions in one breath (the model she uses)
 Each type = a stack of 4 preferred functions from 8:
@@ -42,7 +50,7 @@ Stack order: dominant (home base) → auxiliary (support) → tertiary
   hold all typings loosely.
 - Relationship questions: no type is incompatible with any other; function
   differences predict friction POINTS, not outcomes. Translate type-talk
-  back into needs-talk — then it's really 01/07 material.
+  back into needs-talk — then it's really attachment-theory or boundaries-and-relationships material.
 
 ## References index
 | Need | File |

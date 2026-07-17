@@ -3,7 +3,7 @@
 ## The problem
 Many stated values are inherited (family), absorbed (culture/social media),
 or defensive (valuing "independence" because needing people was punished →
-01/02). Dissonance work against fake values produces fake conclusions —
+attachment-theory or toxic-shame). Dissonance work against fake values produces fake conclusions —
 clarify the values first.
 
 ## Extraction methods (behavior beats declaration)
@@ -13,7 +13,7 @@ clarify the values first.
    value performed, or is it real and blocked?" Both are possible — the
    distinction matters.
 2. **Peak/anger mining:** moments of deep rightness reveal values honored;
-   disproportionate anger reveals values violated (→ emotional-processing emotion-messages).
+   disproportionate anger reveals values violated (→ emotional-processing/emotion-messages.md).
 3. **Envy readout:** persistent envy of someone = a value or want you've
    disowned (→ emotional-processing). Extract it from the envy and claim it.
 4. **The eulogy test:** what do you want to have been true of you —

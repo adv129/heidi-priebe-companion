@@ -6,7 +6,8 @@
  * with the regular system preamble (composed from system.js parts) and swaps the
  * conversational stance for question craft: concrete over abstract, follow the
  * energy, treat contradictions as the most valuable moments, check the model out
- * loud. Drawn from agent-core's intake-questions.md and conversational-stance.md.
+ * loud. agent-core's intake-questions.md and conversational-stance.md are NOT
+ * duplicated here — core.js appends them to the agent-core block at runtime.
  */
 
 "use strict";

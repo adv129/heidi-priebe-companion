@@ -124,7 +124,11 @@ function renderTranscript(messages, limit = MAX_HISTORY_MSGS) {
 function agentCoreRoutingTable() {
   const body = skills.readAgentCore();
   const m = body.match(/###?\s*Routing table[\s\S]*?(?=\n##\s|\n---|\s*$)/i);
-  return m ? m[0].trim() : body;
+  const table = m ? m[0].trim() : body;
+  // Extended routing logic (mixed presentations, when NOT to route) lives in
+  // agent-core's routing-map.md — the router is its only consumer.
+  const extended = skills.tryReadReference(skills.AGENT_CORE, "routing-map.md");
+  return extended ? `${table}\n\n${extended}` : table;
 }
 
 /** Timed provider call that trace-logs the full prompt, output, model, and latency. */
@@ -278,11 +282,20 @@ function assemble(session, userMessage, active, opts = {}) {
   const skillBody = active.name ? skills.readSkillBody(active.name) : null;
   const referenceBody = active.reference ? skills.readReference(active.name, active.reference) : null;
   const exploring = session.mode === "explore";
+  // agent-core's stance/question references ride along with its body: the
+  // respond model can't open files, so anything it should know must be inlined.
+  const agentCore = [
+    skills.readAgentCore(),
+    skills.tryReadReference(skills.AGENT_CORE, "conversational-stance.md"),
+    exploring ? skills.tryReadReference(skills.AGENT_CORE, "intake-questions.md") : null,
+  ]
+    .filter(Boolean)
+    .join("\n\n---\n\n");
   return T.buildRespondPrompt({
     system: exploring ? T.EXPLORE_PREAMBLE : T.SYSTEM_PREAMBLE,
     safetyDirective: opts.safetyDirective || null,
     toneDirective: opts.toneDirective || null,
-    agentCore: skills.readAgentCore(),
+    agentCore,
     activeSkillName: active.name,
     skillBody,
     referenceName: active.reference,

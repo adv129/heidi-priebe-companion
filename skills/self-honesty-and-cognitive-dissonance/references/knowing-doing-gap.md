@@ -12,8 +12,7 @@ alongside — the action gets lighter after the mourning starts, not before
 ## 2. The identity gap
 "Who am I without this relationship/role/struggle?" The current situation
 hosts the self-concept. Fix: build slivers of the next identity before the
-exit — new contexts, new competencies — so the leap isn't into void (→ self-abandonment
-reclaiming-identity).
+exit — new contexts, new competencies — so the leap isn't into void (→ self-abandonment/reclaiming-identity.md).
 
 ## 3. The capacity gap
 The truth requires skills never learned: saying no (→ boundaries-and-relationships), tolerating

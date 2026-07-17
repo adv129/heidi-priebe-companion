@@ -17,7 +17,7 @@ as backlog, not breakdown.
 ## 3. The Numb-er
 Converts feeling → static. Substances, food, scrolling, gaming, constant
 audio input. Intervention: subtract one numbing channel briefly and observe
-what surfaces; micro-dose sensation (→ somatic-basics). Screen for
+what surfaces; micro-dose sensation (→ somatic-basics.md). Screen for
 addiction severity honestly — refer out when it's beyond habit.
 
 ## 4. The Spiritual Bypasser
