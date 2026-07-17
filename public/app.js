@@ -664,7 +664,6 @@ async function renderChat() {
       ...(opener.reportBacks || []).map((r) => ({ label: r.label, message: r.message, cls: "report" })),
       ...(opener.options || []),
     ];
-    if (opener.canExplore) chips.push({ label: "Get to know me better →", cls: "explore", onClick: startExplore });
     if (chips.length) renderChips(scroll, chips, input);
     if (opener.exercises && opener.exercises.length) renderExercises(scroll, opener.exercises);
   }
@@ -675,46 +674,6 @@ async function renderChat() {
   // Deep-link prefill (e.g. "Talk about this" on an experiment card in Journey).
   const prefill = sessionStorage.getItem("composerPrefill");
   if (prefill) { sessionStorage.removeItem("composerPrefill"); input.value = prefill; autoGrow(input); }
-
-  async function startExplore() {
-    // Immediate feedback: the explore opener is a real model call and can take
-    // a while — switch the lens, drop the chips, and show a typing bubble now.
-    app.querySelector("#chips")?.remove();
-    app.querySelector("#exercises")?.remove();
-    app.querySelector("#explore-nudge")?.remove();
-    exploring = true;
-    setModeLens(null, false);
-    const typing = addBubble(scroll, "assistant", "");
-    typing.classList.add("loading");
-    typing.appendChild(scrollLoader());
-    markFocused(); scrollDown();
-    try {
-      const r = await api("POST", "/api/session/mode", { mode: "explore" });
-      typing.remove();
-      if (r.opener && r.opener.blurb) {
-        addBubble(scroll, "assistant", r.opener.blurb);
-        if (r.opener.options && r.opener.options.length) renderChips(scroll, r.opener.options, input);
-      }
-      markFocused(); scrollDown();
-    } catch (e) {
-      typing.remove();
-      exploring = false;
-      setModeLens(null, false);
-      addBubble(scroll, "system", "Couldn't switch to an explore session: " + e.message);
-    }
-  }
-
-  function renderExploreNudge() {
-    app.querySelector("#explore-nudge")?.remove();
-    const div = document.createElement("div");
-    div.id = "explore-nudge"; div.className = "close-nudge";
-    div.innerHTML = `<span>There might be something here worth slowing down and digging into together.</span>
-      <button class="primary" id="explore-yes">Let's explore</button>
-      <button id="explore-no">Keep talking</button>`;
-    scroll.appendChild(div); scrollDown();
-    div.querySelector("#explore-yes").addEventListener("click", () => { div.remove(); startExplore(); });
-    div.querySelector("#explore-no").addEventListener("click", () => div.remove());
-  }
 
   const send = async (text) => {
     const msg = (text != null ? text : input.value).trim();
@@ -755,7 +714,6 @@ async function renderChat() {
       exploring = r.mode === "explore";
       if (r.safety) setLens("your wellbeing comes first", true);
       else setModeLens(r.activeSkill, false);
-      if (r.suggestExplore) renderExploreNudge();
       if (r.close) renderCloseNudge(scroll);
     } catch (e) {
       const errBubble = typingBubble || typing;
@@ -786,7 +744,6 @@ async function renderChat() {
     exploring = false;
     setLens("listening", false);
     app.querySelector("#close-nudge")?.remove();
-    app.querySelector("#explore-nudge")?.remove();
   }
 
   function renderCloseNudge(scroll) {
@@ -1410,6 +1367,13 @@ const TONE_DIALS = [
   { key: "validating", label: "Validating", lo: "Matter-of-fact", hi: "Warmly affirming" },
 ];
 
+// Opener styles. Legacy values (smart/blurb/open) map to "pickup" when rendering.
+const OPENER_STYLES = [
+  { value: "pickup", label: "Pick up where we left off", hint: "A warm line about last time, plus a few directions to choose from." },
+  { value: "homework", label: "Check in on my homework first", hint: "Opens with what you agreed to notice or try." },
+  { value: "patterns", label: "Dig into a pattern", hint: "Offers the patterns we've been noticing — pick one to unpack." },
+];
+
 function dialsFromUser(u) {
   const raw = (u && u.toneDials) || LEGACY_TONE_TO_DIALS[u && u.tone] || { inquisitive: 3, challenging: 3, validating: 3 };
   const clamp = (n) => Math.min(5, Math.max(1, Math.round(Number(n)) || 3));
@@ -1420,6 +1384,7 @@ async function renderSettings() {
   const cfg = appConfig || {};
   const u = cfg.user || {};
   const dials = dialsFromUser(u);
+  const openerStyle = OPENER_STYLES.some((o) => o.value === u.openerStyle) ? u.openerStyle : "pickup"; // legacy smart/blurb/open → pickup
   if (!providers) { try { providers = await api("GET", "/api/providers"); } catch { providers = []; } }
   app.innerHTML = `
     <h1>Settings</h1>
@@ -1439,10 +1404,9 @@ async function renderSettings() {
         </div>`).join("")}
       <label>How should I open our conversations?</label>
       <select id="s-opener">
-        <option value="smart" ${u.openerStyle === "smart" || !u.openerStyle ? "selected" : ""}>Smart — pick up where we left off</option>
-        <option value="blurb" ${u.openerStyle === "blurb" ? "selected" : ""}>A warm line + one question</option>
-        <option value="open" ${u.openerStyle === "open" ? "selected" : ""}>Just "what's on your mind?"</option>
+        ${OPENER_STYLES.map((o) => `<option value="${o.value}" ${o.value === openerStyle ? "selected" : ""}>${esc(o.label)}</option>`).join("")}
       </select>
+      <p class="muted" id="s-opener-hint" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.82rem;margin:6px 0 0">${esc(OPENER_STYLES.find((o) => o.value === openerStyle).hint)}</p>
       <div class="row" style="margin-top:14px"><button class="primary" id="s-save-you">Save</button><span id="s-msg1" class="toast"></span></div>
     </div>
     <div class="card">
@@ -1460,6 +1424,13 @@ async function renderSettings() {
         <button id="s-newperson" title="Runs onboarding again for someone else — the current profile and sessions are archived, never inherited">Set up for a new person</button>
       </div>
     </div>`;
+
+  // Keep the sub-copy honest about whichever opener style is selected.
+  const openerSel = app.querySelector("#s-opener");
+  openerSel.addEventListener("change", () => {
+    const o = OPENER_STYLES.find((x) => x.value === openerSel.value) || OPENER_STYLES[0];
+    app.querySelector("#s-opener-hint").textContent = o.hint;
+  });
 
   // Live-update the "n/5" readout as each slider moves.
   for (const d of TONE_DIALS) {

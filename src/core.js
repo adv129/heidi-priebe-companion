@@ -411,7 +411,6 @@ async function handleTurn(userMessage, hooks = {}) {
   let active = { name: null, reference: null };
   let recall = { block: null, recalledSessionId: null, consulted: null };
   let close = false;
-  let suggestExplore = false;
   let routerReason = null;
 
   if (!crisis.flagged) {
@@ -420,10 +419,8 @@ async function handleTurn(userMessage, hooks = {}) {
     recall = buildRecallBlock(routed, active.name);
     close = routed.close === true;
     routerReason = routed.reason || null;
-    if (routed.suggestExplore === true && session.mode !== "explore" && !session.exploreSuggested) {
-      suggestExplore = true;
-      session.exploreSuggested = true;
-    }
+    // Explore entry points are dormant for now: the router may still emit
+    // suggestExplore, but it's deliberately not propagated to the UI.
   }
 
   const opts = { recallBlock: recall.block, toneDirective: T.buildToneDirective(cfg.user || {}) };
@@ -469,7 +466,6 @@ async function handleTurn(userMessage, hooks = {}) {
     recalledSessionId: recall.recalledSessionId,
     consulted: recall.consulted,
     close,
-    suggestExplore,
     mode: session.mode,
     safety: crisis.flagged,
   };
@@ -485,7 +481,7 @@ async function handleTurn(userMessage, hooks = {}) {
   }
   saveCurrent(session);
 
-  return { reply, chunks, activeSkill: active.name, reference: active.reference, safety: crisis.flagged, close, suggestExplore, mode: session.mode, trace };
+  return { reply, chunks, activeSkill: active.name, reference: active.reference, safety: crisis.flagged, close, mode: session.mode, trace };
 }
 
 // ─── Session end / consolidate ───────────────────────────────────────────────
@@ -562,37 +558,67 @@ async function endSession() {
 // ─── Opener (pre-generated at consolidation; deterministic fallback otherwise) ─
 
 function getOpener(cfg) {
-  const style = (cfg && cfg.user && cfg.user.openerStyle) || "smart";
+  // Styles: "pickup" (default) | "homework" | "patterns". Legacy values
+  // (smart/blurb/open) and anything unknown normalize to "pickup" on read —
+  // config files are never rewritten.
+  const requested = (cfg && cfg.user && cfg.user.openerStyle) || "pickup";
+  const style = ["pickup", "homework", "patterns"].includes(requested) ? requested : "pickup";
   const profile = memory.loadProfile();
   const name = profile.name || (cfg && cfg.user && cfg.user.name) || "";
+  const hi = `Hi${name ? " " + name : ""}`;
   const sessions = memory.listSessions();
+  const trim = (s, n) => (s.length > n ? s.slice(0, n).trim() + "…" : s);
 
   // These ride along for every style: report-back chips for open homework
-  // items, deterministic journey starters (passed event / experiment
-  // check-in — at most one), and whether an explore session makes sense yet.
+  // items and deterministic journey starters (passed event / experiment
+  // check-in — at most one).
   const chipByType = {
     notice: { label: "Report back", message: (t) => `I want to report back on what I was noticing: "${t}"` },
     action: { label: "How it went", message: (t) => `I want to tell you how it went — the thing I said I'd try: "${t}"` },
     reflection: { label: "What came up", message: (t) => `I want to share what came up when I sat with: "${t}"` },
   };
-  const reportBacks = memory.openAssignments().slice(0, 2).map((a) => {
+  const toReportBack = (a) => {
     const chip = chipByType[a.type] || chipByType.notice;
-    return {
-      id: a.id,
-      label: `${chip.label}: ${a.text.length > 44 ? a.text.slice(0, 44).trim() + "…" : a.text}`,
-      message: chip.message(a.text),
-    };
-  });
+    return { id: a.id, label: `${chip.label}: ${trim(a.text, 44)}`, message: chip.message(a.text) };
+  };
+  const openItems = memory.openAssignments();
+  const reportBacks = openItems.slice(0, 2).map(toReportBack);
   const starters = journey.openerCandidates();
   // Profile exercises: the depth onboarding deliberately skips (people, goals,
   // patterns) surfaces here as light invitations once the person is in the app.
   const exercises = [];
   if (!(profile.people && profile.people.length)) exercises.push({ kind: "people", label: "Add the people in your life" });
   if (!(profile.goals && profile.goals.length)) exercises.push({ kind: "goal", label: "Name something you're working toward" });
-  const base = { style, reportBacks, starters, exercises: exercises.slice(0, 2), canExplore: sessions.length > 0 || !!profile.lifeContext };
+  const base = { style, reportBacks, starters, exercises: exercises.slice(0, 2) };
 
-  if (style === "open") {
-    return { ...base, blurb: `Hi${name ? " " + name : ""}. What's on your mind?`, options: [] };
+  if (style === "homework") {
+    const dueExperiment = starters.find((s) => s.kind === "experiment") || null;
+    if (openItems.length || dueExperiment) {
+      const verbByType = { notice: "notice", action: "try", reflection: "sit with" };
+      const first = openItems[0];
+      const blurb = first
+        ? `${hi}. Before anything new — you agreed to ${verbByType[first.type] || "notice"} "${trim(first.text, 80)}". How's that been?`
+        : `${hi}. Before anything new — I want to hear how that experiment's been going.`;
+      // Every open item gets its report-back chip here; exercises stay off (focus).
+      return { ...base, reportBacks: openItems.map(toReportBack), starters: dueExperiment ? [dueExperiment] : [], exercises: [], blurb, options: [] };
+    }
+    // Nothing to check in on — fall through to the pickup behavior.
+  }
+
+  if (style === "patterns") {
+    const rank = { supported: 0, testing: 1, forming: 2 };
+    const active = (profile.hypotheses || [])
+      .filter((h) => h.status in rank)
+      .sort((a, b) => (rank[a.status] - rank[b.status]) || String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
+      .slice(0, 4);
+    if (active.length) {
+      return {
+        ...base,
+        blurb: `${hi}. We've been noticing a few patterns together. Want to take one apart and see if it holds up?`,
+        options: active.map((h) => `Dig into: ${trim(h.statement, 70)}`),
+      };
+    }
+    // No active patterns yet — fall through to the pickup behavior.
   }
 
   const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -604,7 +630,7 @@ function getOpener(cfg) {
     return true;
   });
 
-  // Fresh, consolidation-generated opener — used for every style except "open".
+  // pickup: fresh, consolidation-generated opener when one is waiting.
   if (profile.nextOpener && profile.nextOpener.blurb) {
     let options = dedupe((profile.nextOpener.options || []).map((o) => String(o).trim()));
     if (!options.some((o) => /something new/i.test(o))) options.push("Something new today");
