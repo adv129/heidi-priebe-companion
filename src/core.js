@@ -350,7 +350,11 @@ async function route(cfg, session, userMessage) {
   // ride along and feed the "long session → look for a landing" close rule.
   const exchanges = tailMsgs.filter((m) => m.role === "user").length;
   const startedAt = stampToDate(session.startedAt);
-  const minutes = startedAt ? Math.max(0, Math.round((Date.now() - startedAt.getTime()) / 60000)) : null;
+  let minutes = startedAt ? Math.max(0, Math.round((Date.now() - startedAt.getTime()) / 60000)) : null;
+  // current.json survives restarts, so a session resumed a day later would read
+  // as a marathon and bias the router toward closing on turn one. Beyond two
+  // hours the wall-clock is telling us about the gap, not the session — drop it.
+  if (minutes != null && minutes > 120) minutes = null;
   const prompt = T.buildRoutePrompt({
     sessionStats: { exchanges, minutes },
     catalog: skills.routerCatalog(),
