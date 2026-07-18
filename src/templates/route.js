@@ -5,16 +5,29 @@
  * catalog of topical skills, and the person's memory, decide which single skill
  * (if any) is active, whether to pull a specific reference or a past session,
  * whether to consult a second framework, and whether the conversation has reached
- * a natural place to pause. All the "machinery" lives here so the respond step can
- * produce pure prose (no leaked reasoning). Returns strict JSON.
+ * a natural place to start wrapping up (the two-phase close: ask, then begin).
+ * All the "machinery" lives here so the respond step can produce pure prose
+ * (no leaked reasoning). Returns strict JSON.
  */
 
 "use strict";
 
-function buildRoutePrompt({ catalog, routingTable, transcriptTail, currentSkill, sessionHistory, mode, suggestedExploreAlready, timeLine, sessionStats }) {
+function buildRoutePrompt({ catalog, routingTable, transcriptTail, currentSkill, sessionHistory, mode, suggestedExploreAlready, timeLine, sessionStats, wrapAskedAgo, wrapPhase }) {
   const sessionLine = sessionStats
-    ? `SESSION SO FAR: ${sessionStats.exchanges} exchange${sessionStats.exchanges === 1 ? "" : "s"}${sessionStats.minutes != null ? ` over ${sessionStats.minutes} minute${sessionStats.minutes === 1 ? "" : "s"}` : ""}.`
+    ? `SESSION SO FAR: ${sessionStats.exchanges} exchange${sessionStats.exchanges === 1 ? "" : "s"}.`
     : "";
+  // Wrap-up state: the 6-message tail may not include the ask, so the router is
+  // told explicitly whether (and how recently) wrapping up came up.
+  let wrapLine;
+  if (wrapAskedAgo == null) {
+    wrapLine = "WRAP-UP STATE: not asked yet this session.";
+  } else if (wrapPhase === "begun") {
+    wrapLine = `WRAP-UP STATE: you began winding down ${wrapAskedAgo} exchange${wrapAskedAgo === 1 ? "" : "s"} ago — if they're still engaging, keep going normally ("none"); ask or begin again only when things settle once more.`;
+  } else if (wrapAskedAgo <= 2) {
+    wrapLine = `WRAP-UP STATE: you asked about wrapping up ${wrapAskedAgo} exchange${wrapAskedAgo === 1 ? "" : "s"} ago — read their reply for assent or decline.`;
+  } else {
+    wrapLine = `WRAP-UP STATE: you asked about wrapping up ${wrapAskedAgo} exchanges ago and they kept going — don't ask again soon.`;
+  }
   const explore = mode === "explore"
     ? `- This is an EXPLORE session (structured getting-to-know-them). The skill you pick is the DIAGNOSTIC
   LENS for the current thread of inquiry — what to listen for — not a curriculum to teach.
@@ -34,12 +47,17 @@ Principles (from the agent-core orchestrator):
 - Choose at most ONE active skill.
 - Only "recall" a past session when it is clearly relevant to what they just said.
 - Only "consult" a second framework when the active skill genuinely needs it (rare).
-- Set "close" true when the exchange has reached a natural, settled stopping point (a resolution,
-  a wind-down, a "thanks, that helps") — not mid-exploration.
-  Also: once a session has run long (roughly 12+ exchanges or ~25+ minutes), actively look for a
-  moment to land — a thread completing, energy dipping, the person circling. Long sessions drift;
-  helping them land well is part of care. "close" is a gentle invitation in the UI, never an
-  eviction — when in doubt after a long stretch, prefer true.
+- "close" runs the two-phase wrap-up. Set "ask" when the exchange has reached a natural, settled
+  stopping point (a resolution, a wind-down, a "thanks, that helps") — never mid-exploration. The
+  reply will gently ASK whether this feels like a good place to start wrapping up: an invitation,
+  not an ending.
+  Set "begin" ONLY when (a) your previous turn asked about wrapping up and their new message
+  assents, or (b) they themselves ask to wrap up or say they need to go — then skip the ask and
+  go straight to "begin". The reply will properly wind the session down.
+  If they decline an ask (not yet, keep going, a new thread opens), set "none" and do not ask
+  again soon. Otherwise "none".
+  Long sessions drift; helping them land well is part of care. Past roughly 45 exchanges, lean
+  strongly toward "ask" at the first settled moment (the app will eventually force an ask anyway).
 ${explore}
 
 TOPICAL SKILLS AVAILABLE:
@@ -50,6 +68,7 @@ ${routingTable}
 
 CURRENT ACTIVE SKILL: ${currentSkill || "(none)"}
 ${sessionLine}
+${wrapLine}
 ${timeLine ? `TIME (server-computed): ${timeLine}` : ""}
 ${sessionHistory ? `\nPAST SESSIONS ON RECORD (id — title):\n${sessionHistory}` : ""}
 
@@ -57,7 +76,7 @@ RECENT CONVERSATION (most recent last):
 ${transcriptTail}
 
 Respond with ONLY a JSON object, no prose, exactly this shape:
-{"skill":"<skill-name|stay|none>","reference":"<reference-filename.md|null>","recall":"<past-session-id|null>","consult":"<skill-name|null>","close":<true|false>,"suggestExplore":<true|false>,"reason":"<one short sentence: why this lens>"}`;
+{"skill":"<skill-name|stay|none>","reference":"<reference-filename.md|null>","recall":"<past-session-id|null>","consult":"<skill-name|null>","close":"<none|ask|begin>","suggestExplore":<true|false>,"reason":"<one short sentence: why this lens>"}`;
 }
 
 module.exports = { buildRoutePrompt };

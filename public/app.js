@@ -785,7 +785,7 @@ async function renderChat() {
     app.querySelector("#close-nudge")?.remove();
     const div = document.createElement("div");
     div.id = "close-nudge"; div.className = "close-nudge";
-    div.innerHTML = `<span>This feels like a natural place to pause, if you'd like.</span>
+    div.innerHTML = `<span>Ready when you are.</span>
       <button class="primary" id="wrap-btn">Wrap up &amp; save</button>
       <button id="keep-btn">Keep talking</button>`;
     scroll.appendChild(div); scrollDown();
@@ -953,7 +953,9 @@ function traceHtml(t) {
   if (t.recalledSessionId) rows.push(`<div><b>Recalled session:</b> ${esc(t.recalledSessionId)}</div>`);
   if (t.consulted) rows.push(`<div><b>Consulted:</b> ${esc(t.consulted)}</div>`);
   if (t.safety) rows.push(`<div><b>Safety override:</b> yes</div>`);
-  if (t.close) rows.push(`<div><b>Sensed a natural pause</b></div>`);
+  if (t.closeMove === "ask") rows.push(`<div><b>Sensed a settling point</b> — asked about wrapping up${t.wrapForced ? " (long session)" : ""}</div>`);
+  else if (t.closeMove === "begin") rows.push(`<div><b>Wrapping up</b> — winding the session down${t.closeSuppressed ? " (nudge held back: reply ended on a question)" : ""}</div>`);
+  else if (t.close) rows.push(`<div><b>Sensed a natural pause</b></div>`); // legacy traces (pre two-phase)
   return rows.join("");
 }
 
