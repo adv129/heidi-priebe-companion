@@ -468,14 +468,6 @@ code {
 }
 @keyframes rise { from { opacity: 0; transform: translateY(10px) scale(0.99); } to { opacity: 1; transform: none; } }
 
-/* ── Focus mode: only the latest reply stays crisp; the rest recedes ──────── */
-#chat-scroll.focus .msg { transition: opacity 0.5s ease, filter 0.5s ease; }
-/* opacity only (no blur) — blurring the SVG-textured cards was a heavy repaint */
-#chat-scroll.focus:not(.revealed) .msg:not(.focused) {
-  opacity: 0.12 !important;
-  pointer-events: none;
-}
-
 .composer {
   position: fixed;
   bottom: 0; left: 0; right: 0;
@@ -545,7 +537,6 @@ code {
   gap: 10px;
 }
 .session-bar button { padding: 7px 15px; font-size: 0.78rem; }
-#focus-btn.on { border-color: var(--sage); color: var(--sage); background: var(--sage-soft); }
 .bar-actions { display: flex; align-items: center; gap: 8px; position: relative; }
 #tone-btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 
