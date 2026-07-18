@@ -11,7 +11,10 @@
 
 "use strict";
 
-function buildRoutePrompt({ catalog, routingTable, transcriptTail, currentSkill, sessionHistory, mode, suggestedExploreAlready, timeLine }) {
+function buildRoutePrompt({ catalog, routingTable, transcriptTail, currentSkill, sessionHistory, mode, suggestedExploreAlready, timeLine, sessionStats }) {
+  const sessionLine = sessionStats
+    ? `SESSION SO FAR: ${sessionStats.exchanges} exchange${sessionStats.exchanges === 1 ? "" : "s"}${sessionStats.minutes != null ? ` over ${sessionStats.minutes} minute${sessionStats.minutes === 1 ? "" : "s"}` : ""}.`
+    : "";
   const explore = mode === "explore"
     ? `- This is an EXPLORE session (structured getting-to-know-them). The skill you pick is the DIAGNOSTIC
   LENS for the current thread of inquiry — what to listen for — not a curriculum to teach.
@@ -31,8 +34,12 @@ Principles (from the agent-core orchestrator):
 - Choose at most ONE active skill.
 - Only "recall" a past session when it is clearly relevant to what they just said.
 - Only "consult" a second framework when the active skill genuinely needs it (rare).
-- Set "close" true ONLY if the exchange has reached a natural, settled stopping point (a resolution,
+- Set "close" true when the exchange has reached a natural, settled stopping point (a resolution,
   a wind-down, a "thanks, that helps") — not mid-exploration.
+  Also: once a session has run long (roughly 12+ exchanges or ~25+ minutes), actively look for a
+  moment to land — a thread completing, energy dipping, the person circling. Long sessions drift;
+  helping them land well is part of care. "close" is a gentle invitation in the UI, never an
+  eviction — when in doubt after a long stretch, prefer true.
 ${explore}
 
 TOPICAL SKILLS AVAILABLE:
@@ -42,6 +49,7 @@ AGENT-CORE ROUTING SIGNALS (presenting signal → skill):
 ${routingTable}
 
 CURRENT ACTIVE SKILL: ${currentSkill || "(none)"}
+${sessionLine}
 ${timeLine ? `TIME (server-computed): ${timeLine}` : ""}
 ${sessionHistory ? `\nPAST SESSIONS ON RECORD (id — title):\n${sessionHistory}` : ""}
 

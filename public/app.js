@@ -687,12 +687,23 @@ async function renderChat() {
     markFocused(); scrollDown(); requestAnimationFrame(applyFocusState);
     app.querySelector("#send-btn").disabled = true;
 
-    // Bubbles stream in progressively: first chunk replaces the loader and a
-    // small persistent typing bubble trails the conversation; each later chunk
-    // slots in before it; done removes it and pins the trace on the last bubble.
+    // Bubbles stream in progressively — but PACED, not as fast as the model
+    // writes. The first chunk reveals the moment it arrives (the latency win);
+    // later chunks queue and reveal only after the previous bubble has had
+    // reading time (delay = clamp(1000 + prevChars*35, 1600, 4500) ms from the
+    // previous reveal), with the trailing typing bubble filling the gaps so it
+    // reads like the companion typing the next message. Done-effects (trace,
+    // lens, close nudge) wait for the queue to drain — the nudge appears after
+    // the final bubble, never before. Session restore stays instant.
     let typingBubble = null; // the between-chunks indicator (after first chunk)
     let lastBubble = null;   // last assistant bubble of this turn
-    const onChunk = (chunkText) => {
+    const queue = [];        // chunks that arrived but aren't revealed yet
+    let revealTimer = null;
+    let lastRevealAt = 0, lastRevealChars = 0;
+    let drainResolve = null; // resolves the post-stream wait once the queue empties
+    const readingDelay = (chars) => Math.min(4500, Math.max(1600, 1000 + chars * 35));
+
+    const reveal = (chunkText) => {
       if (!typingBubble) {
         typing.remove(); // the initial loader bubble
         typingBubble = addBubble(scroll, "assistant", "");
@@ -702,11 +713,34 @@ async function renderChat() {
       const b = addBubble(scroll, "assistant", chunkText);
       scroll.insertBefore(b, typingBubble);
       lastBubble = b;
+      lastRevealAt = Date.now();
+      lastRevealChars = chunkText.length;
       markFocused(); scrollDown(); requestAnimationFrame(applyFocusState);
+    };
+    const pump = () => {
+      if (revealTimer) return;
+      if (!queue.length) { if (drainResolve) { drainResolve(); drainResolve = null; } return; }
+      const wait = Math.max(0, lastRevealAt + readingDelay(lastRevealChars) - Date.now());
+      revealTimer = setTimeout(() => {
+        revealTimer = null;
+        reveal(queue.shift());
+        pump();
+      }, wait);
+    };
+    const flushQueue = () => { // errors mid-stream: show what arrived, unpaced
+      if (revealTimer) { clearTimeout(revealTimer); revealTimer = null; }
+      while (queue.length) reveal(queue.shift());
+    };
+    const onChunk = (chunkText) => {
+      if (!lastBubble && !queue.length) { reveal(chunkText); return; } // first: immediate
+      queue.push(chunkText);
+      pump();
     };
 
     try {
       const r = await streamChat({ message: msg }, onChunk);
+      // The stream is done but paced bubbles may still be pending — wait them out.
+      if (queue.length || revealTimer) await new Promise((res) => { drainResolve = res; pump(); });
       if (typingBubble) typingBubble.remove();
       else typing.remove(); // no chunk ever arrived (shouldn't happen, but never strand the loader)
       if (!lastBubble && r.reply) lastBubble = addBubble(scroll, "assistant", r.reply);
@@ -716,6 +750,7 @@ async function renderChat() {
       else setModeLens(r.activeSkill, false);
       if (r.close) renderCloseNudge(scroll);
     } catch (e) {
+      flushQueue();
       const errBubble = typingBubble || typing;
       errBubble.classList.remove("loading");
       errBubble.replaceChildren();
