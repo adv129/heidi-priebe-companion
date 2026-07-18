@@ -301,18 +301,39 @@ async function handleRequest(req, res) {
     return;
   }
 
-  // ── POST /api/session/end — consolidate into memory ───────────────────────────
+  // ── POST /api/session/end — snapshot now, consolidate in the background ───────
+  // The synchronous part (pending-save snapshot, deterministic closing-ritual
+  // writes, clearCurrent) runs under `busy`; the slow consolidate model call is
+  // kicked off WITHOUT awaiting and tracked via GET /api/session/save-status.
+  // Body (optional): { takeaway, experiment } from the closing ritual — trimmed
+  // and length-capped in core. A save already in flight → 409.
   if (req.method === "POST" && pathname === "/api/session/end") {
     if (busy) { apiError(res, 409, "busy"); return; }
     busy = true;
     try {
-      const result = await core.endSession();
-      json(res, 200, result);
+      let body = {};
+      try { const raw = await readBody(req); body = raw ? JSON.parse(raw) : {}; } catch { apiError(res, 400, "invalid JSON"); return; }
+      const result = core.endSession({ takeaway: body.takeaway, experiment: body.experiment });
+      if (!result.ended && result.reason === "save-in-progress") { apiError(res, 409, "save in progress"); return; }
+      if (result.ended) {
+        // Fire-and-forget: finishSave records its outcome in the save status
+        // and never rejects for normal failures; this catch is a backstop.
+        core.finishSave(result.snapshot).catch((e) => console.error(`[save] ${e.message}`));
+        json(res, 200, { ended: true, saving: true });
+      } else {
+        json(res, 200, result);
+      }
     } catch (e) {
       if (!res.headersSent) apiError(res, 500, e.message);
     } finally {
       busy = false;
     }
+    return;
+  }
+
+  // ── GET /api/session/save-status — background-save indicator ──────────────────
+  if (req.method === "GET" && pathname === "/api/session/save-status") {
+    json(res, 200, core.saveStatusView());
     return;
   }
 
@@ -464,3 +485,7 @@ function startServer(port, triesLeft) {
 }
 
 startServer(DEFAULT_PORT, MAX_PORT_TRIES);
+
+// Crash recovery: a leftover memory/pending-save.json means the process died
+// mid-save — resume the consolidate in the background (see core.resumePendingSave).
+core.resumePendingSave();

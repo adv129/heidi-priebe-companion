@@ -400,7 +400,7 @@ function composeBrief({ preset, windowStart = null, sections = null, excluded = 
         const state = e.outcome && inWindow(e.outcome.at, win)
           ? `concluded: ${trimTo(e.outcome.summary, 100)}`
           : cs.length ? cs[cs.length - 1].verdict : "no check-in yet";
-        return { id: e.id, line: `Trying ${e.theReplacement} instead of ${e.thePattern} — ${state}` };
+        return { id: e.id, line: `Trying ${e.theReplacement}${e.thePattern ? ` instead of ${e.thePattern}` : ""} — ${state}` };
       });
     const hwItems = memory.getAssignments()
       .filter((a) => inWindow(a.givenAt, win) || (a.report && inWindow(a.report.at, win)))
@@ -484,7 +484,7 @@ function digestForNarrative(composed) {
         if (!sec.items.length && !sec.learned.length) break;
         S("What helps");
         for (const it of sec.items) L.push(`- ${it}`);
-        for (const e of sec.learned) L.push(`- Tried "${e.replacement}" instead of "${e.pattern}" — learned: ${e.summary} (${e.keeping})`);
+        for (const e of sec.learned) L.push(`- Tried "${e.replacement}"${e.pattern ? ` instead of "${e.pattern}"` : ""} — learned: ${e.summary} (${e.keeping})`);
         break;
       }
       case "flags": {
@@ -546,7 +546,7 @@ function digestForNarrative(composed) {
         if (!sec.items.length) break;
         S("Experiments this period");
         for (const e of sec.items) {
-          L.push(`- Trying "${e.replacement}" instead of "${e.pattern}"${e.startedThisPeriod ? " (started this period)" : ""} [${e.status}]`);
+          L.push(`- Trying "${e.replacement}"${e.pattern ? ` instead of "${e.pattern}"` : ""}${e.startedThisPeriod ? " (started this period)" : ""} [${e.status}]`);
           for (const c of e.checkIns) L.push(`    check-in ${c.date}: ${c.note} (${c.verdict})`);
           if (e.outcome) L.push(`    concluded — learned: ${e.outcome.summary} (${e.outcome.keeping})`);
         }

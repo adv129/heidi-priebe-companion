@@ -103,8 +103,10 @@ function expireStaleEvents(tl, now) {
 
 // --- Experiments -----------------------------------------------------------------
 
+// thePattern may be empty (a self-authored experiment from the closing ritual
+// has only the replacement); theReplacement is always required.
 function createExperiment(store, input, sessionId) {
-  if (!input || !input.thePattern || !input.theReplacement) return null;
+  if (!input || !input.theReplacement) return null;
   const runningCount = store.experiments.filter((e) => e.status === "running").length;
   const agreed = input.agreed === true && runningCount < MAX_RUNNING_EXPERIMENTS;
   const nowId = memory.stamp().id;
@@ -112,7 +114,7 @@ function createExperiment(store, input, sessionId) {
     id: newId("exp", store.experiments.map((e) => e.id)),
     hypothesisId: typeof input.hypothesisId === "string" ? input.hypothesisId : null,
     goalId: typeof input.goalId === "string" ? input.goalId : null,
-    thePattern: String(input.thePattern),
+    thePattern: String(input.thePattern || ""),
     theReplacement: String(input.theReplacement),
     strategy: String(input.strategy || ""),
     lens: typeof input.lens === "string" ? input.lens : null,
@@ -124,6 +126,27 @@ function createExperiment(store, input, sessionId) {
     source: sessionId || null,
   };
   store.experiments.push(exp);
+  return exp;
+}
+
+/**
+ * A self-authored experiment from the closing ritual: the person's own "thing
+ * to try this week", written deterministically at session end — no LLM, no
+ * hypothesis link, no named pattern. Same gates as any experiment: with
+ * MAX_RUNNING_EXPERIMENTS already running it lands as "proposed".
+ */
+function addRitualExperiment(text, sessionId) {
+  const t = String(text || "").trim();
+  if (!t) return null;
+  const store = loadExperiments();
+  const exp = createExperiment(store, {
+    thePattern: "",
+    theReplacement: t,
+    strategy: "self-authored",
+    hypothesisId: null,
+    agreed: true,
+  }, sessionId || "closing-ritual");
+  if (exp) saveExperiments(store);
   return exp;
 }
 
@@ -211,11 +234,13 @@ function experimentsContext(now = new Date()) {
 
   const active = store.experiments.filter((e) => e.status === "running" || e.status === "proposed");
   for (const e of active.slice(0, 3)) {
+    // Self-authored experiments have no named pattern — drop the "instead of".
+    const instead = e.thePattern ? ` instead of "${e.thePattern}"` : "";
     if (e.status === "running") {
       const day = (ta.dayDiff(e.startedAt, now) || 0) + 1;
-      lines.push(`- [${e.id}] RUNNING (day ${day}): trying "${e.theReplacement}" instead of "${e.thePattern}"${e.checkIns.length ? ` — last check-in: "${e.checkIns[e.checkIns.length - 1].note}" (${e.checkIns[e.checkIns.length - 1].verdict})` : ""}`);
+      lines.push(`- [${e.id}] RUNNING (day ${day}): trying "${e.theReplacement}"${instead}${e.checkIns.length ? ` — last check-in: "${e.checkIns[e.checkIns.length - 1].note}" (${e.checkIns[e.checkIns.length - 1].verdict})` : ""}`);
     } else {
-      lines.push(`- [${e.id}] PROPOSED (they haven't said yes yet): "${e.theReplacement}" instead of "${e.thePattern}" — only revisit if THEY bring up wanting change.`);
+      lines.push(`- [${e.id}] PROPOSED (they haven't said yes yet): "${e.theReplacement}"${instead} — only revisit if THEY bring up wanting change.`);
     }
   }
 
@@ -281,7 +306,9 @@ function composeTimeline() {
   };
 
   for (const s of memory.listSessions()) {
-    push(s.id, s.mode === "explore" ? "explore-session" : "session", s.title, s.summary, s.id, "session");
+    // The person's own closing-ritual takeaway rides along with the model summary.
+    const detail = [s.summary, s.takeaway ? `Their takeaway: “${s.takeaway}”` : ""].filter(Boolean).join(" · ");
+    push(s.id, s.mode === "explore" ? "explore-session" : "session", s.title, detail, s.id, "session");
   }
 
   const tl = loadTimeline();
@@ -293,7 +320,7 @@ function composeTimeline() {
 
   const store = loadExperiments();
   for (const e of store.experiments) {
-    if (e.startedAt) push(e.startedAt, "experiment-started", `Trying: ${e.theReplacement}`, `instead of ${e.thePattern}`, e.id, "experiment");
+    if (e.startedAt) push(e.startedAt, "experiment-started", `Trying: ${e.theReplacement}`, e.thePattern ? `instead of ${e.thePattern}` : "", e.id, "experiment");
     for (const c of e.checkIns) push(c.at, "experiment-checkin", `Check-in: ${e.theReplacement}`, `${c.note} (${c.verdict})`, e.id, "experiment");
     if (e.outcome) push(e.outcome.at, "experiment-concluded", `Wrapped up: ${e.theReplacement}`, e.outcome.summary, e.id, "experiment");
   }
@@ -337,6 +364,7 @@ module.exports = {
   loadTimeline,
   saveTimeline,
   applyConsolidation,
+  addRitualExperiment,
   experimentsContext,
   openerCandidates,
   composeTimeline,

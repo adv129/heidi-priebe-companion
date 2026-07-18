@@ -617,7 +617,7 @@ function buildOpenItemsBlock(now = new Date()) {
     }
     for (const x of journey.loadExperiments().experiments.filter((e) => e.status === "running" || e.status === "proposed").slice(0, 3)) {
       const day = x.startedAt ? (timeaware.dayDiff(x.startedAt, now) || 0) + 1 : null;
-      lines.push(`- (${x.id}) experiment "${x.theReplacement}" instead of "${x.thePattern}" — ${x.status}${day ? `, day ${day}` : ""}${x.checkIns.length ? `, last check-in ${timeaware.relPhrase(x.checkIns[x.checkIns.length - 1].at, now)}` : ""}`);
+      lines.push(`- (${x.id}) experiment "${x.theReplacement}"${x.thePattern ? ` instead of "${x.thePattern}"` : ""} — ${x.status}${day ? `, day ${day}` : ""}${x.checkIns.length ? `, last check-in ${timeaware.relPhrase(x.checkIns[x.checkIns.length - 1].at, now)}` : ""}`);
     }
     for (const g of memory.loadProfile().goals.filter((g) => g.status !== "achieved").slice(0, 5)) {
       lines.push(`- (${g.id}) goal "${g.text}" — ${g.status}`);
@@ -626,22 +626,92 @@ function buildOpenItemsBlock(now = new Date()) {
   return lines.join("\n");
 }
 
-async function endSession() {
+const PENDING_SAVE_PATH = path.join(memory.MEM_DIR, "pending-save.json");
+const RITUAL_MAX_CHARS = 500;
+
+// Save-status state machine for the background-save indicator. Single-user
+// app, so one module-level slot is enough: idle → saving → done | error.
+// Nothing resets on read — terminal states keep their timestamp and the UI
+// decides how long to show them (it only polls while a save it started is in
+// flight, so a stale "done" never resurfaces as a fresh pill).
+let saveStatus = { state: "idle", at: null };
+
+function setSaveStatus(next) { saveStatus = { ...next, at: memory.stamp().id }; }
+function saveStatusView() { return saveStatus; }
+
+function cleanRitualText(v) {
+  return typeof v === "string" ? v.trim().slice(0, RITUAL_MAX_CHARS).trim() : "";
+}
+
+/**
+ * Synchronous part of ending a session — NO model call, returns immediately.
+ *
+ * 1. Guards double-saves (a consolidate already in flight → save-in-progress).
+ * 2. Applies the deterministic closing-ritual writes: the self-authored
+ *    experiment lands NOW (it must survive an LLM failure), and the takeaway
+ *    rides in the snapshot for appendSession to fold in later.
+ * 3. Snapshots the session to memory/pending-save.json (crash insurance),
+ *    clears current.json so a fresh session can start immediately, and flips
+ *    saveStatus to "saving".
+ *
+ * The caller kicks off finishSave(result.snapshot) WITHOUT awaiting it.
+ * ritual: optional { takeaway, experiment } strings from the closing card.
+ */
+function endSession(ritual = {}) {
+  if (saveStatus.state === "saving") return { ended: false, reason: "save-in-progress" };
   const session = loadCurrent();
   if (!session || !session.messages.length) { clearCurrent(); return { ended: false, reason: "empty" }; }
+
+  const takeaway = cleanRitualText(ritual.takeaway);
+  const experimentText = cleanRitualText(ritual.experiment);
+
+  let experiment = null;
+  if (experimentText) {
+    try { experiment = journey.addRitualExperiment(experimentText, session.id); }
+    catch (e) { console.error(`[ritual-experiment] ${e.message}`); }
+  }
+
+  const snapshot = {
+    id: session.id,
+    mode: session.mode,
+    messages: session.messages,
+    skillsUsed: session.skillsUsed,
+    takeaway: takeaway || null,
+    experimentId: experiment ? experiment.id : null, // already written — resume never re-creates it
+    endedAt: memory.stamp().id,
+  };
+  memory.ensureDirs();
+  fs.writeFileSync(PENDING_SAVE_PATH, JSON.stringify(snapshot, null, 2) + "\n");
+  clearCurrent();
+  setSaveStatus({ state: "saving" });
+  return { ended: true, saving: true, snapshot, experiment };
+}
+
+/**
+ * Async part of the save: the consolidate model call + folds + appendSession +
+ * setNextOpener. Never throws for the normal failure modes:
+ *
+ * - Model/parse failure → the session node is STILL written, with a
+ *   deterministic fallback title (the first user line) and the ritual takeaway
+ *   intact; saveStatus becomes "error" so the UI says "session kept, saving
+ *   hit a snag". pending-save.json is deleted (the data landed).
+ * - Even the fallback write failing → saveStatus "error" and pending-save.json
+ *   is RETAINED for startup recovery (resumePendingSave).
+ */
+async function finishSave(snapshot) {
   const cfg = loadConfig() || {};
-  const transcript = renderTranscript(session.messages, 1000);
+  const transcript = renderTranscript(snapshot.messages, 1000);
   const now = new Date();
 
-  let parsed = null;
+  let parsed = null, consolidateError = null;
   try {
     const raw = await timedComplete(
       "consolidate",
       T.buildConsolidatePrompt({
         transcript,
-        skillsUsed: session.skillsUsed,
+        skillsUsed: snapshot.skillsUsed,
         profileBlock: memory.profileContext(),
-        mode: session.mode,
+        mode: snapshot.mode,
         hypothesesBlock: memory.hypothesesContext({ mode: "consolidate" }),
         assignmentsBlock: memory.assignmentsContext(now),
         openItemsBlock: buildOpenItemsBlock(now),
@@ -651,28 +721,66 @@ async function endSession() {
       { provider: cfg.provider, config: cfg }
     );
     parsed = parseJsonLoose(raw);
-  } catch (e) { console.error(`[consolidate] ${e.message}`); }
+    if (!parsed) consolidateError = "consolidate returned no parseable JSON";
+  } catch (e) { consolidateError = e.message; console.error(`[consolidate] ${e.message}`); }
 
   if (!parsed) {
-    const firstUser = session.messages.find((m) => m.role === "user");
-    parsed = { title: "Session", summary: firstUser ? firstUser.content.slice(0, 160) : "(conversation)", presentingConcern: "", insights: [], profileUpdates: {} };
+    // Deterministic fallback: the session (and the ritual data) is never lost
+    // to a failed model call.
+    const firstUser = snapshot.messages.find((m) => m.role === "user");
+    const firstLine = firstUser ? String(firstUser.content).split(/\r?\n/)[0].trim() : "";
+    const title = firstLine ? (firstLine.length > 64 ? firstLine.slice(0, 64).trim() + "…" : firstLine) : "Session";
+    parsed = { title, summary: firstUser ? firstUser.content.slice(0, 160) : "(conversation)", presentingConcern: "", insights: [], profileUpdates: {} };
+    tracer.log({ label: "consolidate-fallback", sessionId: snapshot.id, error: consolidateError, fallbackTitle: title });
   }
 
-  const node = memory.appendSession({ ...parsed, skills: session.skillsUsed, mode: session.mode });
-  // Fold the understanding + journey loops. Each is defensive — malformed
-  // fields are skipped item-by-item and never block the session save.
-  try { if (parsed.hypothesisUpdates) memory.applyHypothesisUpdates(parsed.hypothesisUpdates, node.id); } catch (e) { console.error(`[hypotheses] ${e.message}`); }
-  try { if (parsed.assignmentUpdates) memory.applyAssignmentUpdates(parsed.assignmentUpdates, node.id, { experiments: journey.loadExperiments().experiments }); } catch (e) { console.error(`[assignments] ${e.message}`); }
-  try { if (parsed.goalProgress) memory.applyGoalProgress(parsed.goalProgress); } catch (e) { console.error(`[goals] ${e.message}`); }
-  try { journey.applyConsolidation(parsed, node.id, now); } catch (e) { console.error(`[journey] ${e.message}`); }
-  if (parsed.nextOpener) {
-    memory.setNextOpener({
-      blurb: stripMarkdown(parsed.nextOpener.blurb || "").trim(),
-      options: Array.isArray(parsed.nextOpener.options) ? parsed.nextOpener.options.map((o) => stripMarkdown(o).trim()) : [],
-    });
+  try {
+    const node = memory.appendSession({ ...parsed, skills: snapshot.skillsUsed, mode: snapshot.mode, takeaway: snapshot.takeaway });
+    // Fold the understanding + journey loops. Each is defensive — malformed
+    // fields are skipped item-by-item and never block the session save.
+    try { if (parsed.hypothesisUpdates) memory.applyHypothesisUpdates(parsed.hypothesisUpdates, node.id); } catch (e) { console.error(`[hypotheses] ${e.message}`); }
+    try { if (parsed.assignmentUpdates) memory.applyAssignmentUpdates(parsed.assignmentUpdates, node.id, { experiments: journey.loadExperiments().experiments }); } catch (e) { console.error(`[assignments] ${e.message}`); }
+    try { if (parsed.goalProgress) memory.applyGoalProgress(parsed.goalProgress); } catch (e) { console.error(`[goals] ${e.message}`); }
+    try { journey.applyConsolidation(parsed, node.id, now); } catch (e) { console.error(`[journey] ${e.message}`); }
+    if (parsed.nextOpener) {
+      memory.setNextOpener({
+        blurb: stripMarkdown(parsed.nextOpener.blurb || "").trim(),
+        options: Array.isArray(parsed.nextOpener.options) ? parsed.nextOpener.options.map((o) => stripMarkdown(o).trim()) : [],
+      });
+    }
+    try { fs.unlinkSync(PENDING_SAVE_PATH); } catch {}
+    if (consolidateError) setSaveStatus({ state: "error", title: node.title, error: consolidateError });
+    else setSaveStatus({ state: "done", title: node.title });
+    return { ended: true, node, degraded: !!consolidateError };
+  } catch (e) {
+    console.error(`[finish-save] ${e.message}`);
+    setSaveStatus({ state: "error", error: e.message });
+    return { ended: false, error: e.message };
   }
-  clearCurrent();
-  return { ended: true, node };
+}
+
+/**
+ * Crash recovery: pending-save.json existing at startup means a save never
+ * finished (the process died mid-consolidate). Chosen behavior: RESUME —
+ * re-run the full finishSave (fresh consolidate attempt) rather than folding
+ * straight to the fallback title, since the transcript is intact and one more
+ * model call is cheap; finishSave's own fallback still catches a second
+ * failure. The ritual experiment was written in the sync part, so a resume
+ * never duplicates it. An unreadable snapshot is discarded (logged).
+ */
+function resumePendingSave() {
+  let snapshot = null;
+  try {
+    if (!fs.existsSync(PENDING_SAVE_PATH)) return null;
+    snapshot = JSON.parse(fs.readFileSync(PENDING_SAVE_PATH, "utf8"));
+  } catch (e) { console.error(`[save] unreadable pending-save.json — discarding (${e.message})`); try { fs.unlinkSync(PENDING_SAVE_PATH); } catch {} return null; }
+  if (!snapshot || !Array.isArray(snapshot.messages) || !snapshot.messages.length) {
+    try { fs.unlinkSync(PENDING_SAVE_PATH); } catch {}
+    return null;
+  }
+  console.log(`[save] resuming interrupted save for session ${snapshot.id}`);
+  setSaveStatus({ state: "saving" });
+  return finishSave(snapshot).catch((e) => { console.error(`[save] resume failed: ${e.message}`); });
 }
 
 // ─── Opener (pre-generated at consolidation; deterministic fallback otherwise) ─
@@ -999,6 +1107,9 @@ module.exports = {
   saveConfig,
   handleTurn,
   endSession,
+  finishSave,
+  resumePendingSave,
+  saveStatusView,
   getOpener,
   getExploreOpener,
   startExploreSession,

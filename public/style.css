@@ -691,6 +691,100 @@ input[type="range"]:focus::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--ac
 }
 .close-nudge button { padding: 8px 16px; font-size: 0.78rem; }
 
+/* ── Closing ritual card (end-of-session takeaway + experiment) ──────────── */
+.closing-card {
+  align-self: center;
+  width: 100%;
+  max-width: 560px;
+  background-color: var(--paper);
+  border: 1px solid color-mix(in srgb, var(--ink) 14%, var(--paper));
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  margin: 8px 0;
+  box-shadow: var(--shadow-sm);
+  animation: rise 0.35s ease both;
+}
+.closing-card h3 {
+  font-family: var(--font-display);
+  font-size: 1.14rem;
+  font-weight: 600;
+  margin: 0 0 2px;
+}
+.closing-card label {
+  display: block;
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  margin: 14px 0 5px;
+}
+.closing-card textarea { width: 100%; }
+.closing-actions { gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+.closing-actions button { padding: 8px 16px; font-size: 0.8rem; }
+.closing-x {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  font-size: 1.15rem;
+  line-height: 1;
+  color: var(--ink-soft);
+  padding: 2px 6px;
+}
+.closing-x:hover { color: var(--ink); background: transparent; border: none; }
+.closing-keep {
+  border: none;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  text-decoration: underline dotted;
+  margin-left: auto;
+  padding: 8px 6px;
+}
+.closing-keep:hover { color: var(--ink); background: transparent; }
+
+/* ── Background-save pill (top bar, app-wide) ────────────────────────────── */
+.save-pill {
+  font-family: var(--font-ui);
+  font-size: 0.74rem;
+  font-weight: 500;
+  padding: 5px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  background: var(--surface-2);
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.save-pill.saving::before {
+  content: "";
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 7px;
+  animation: save-pulse 1.4s ease-in-out infinite;
+}
+.save-pill.done { border-color: var(--sage); color: var(--ink); background: var(--sage-soft); }
+.save-pill.error { border-color: var(--accent); color: var(--ink); background: var(--accent-soft); }
+@keyframes save-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+@media (max-width: 640px) { .save-pill { max-width: 140px; } }
+
+/* ── The person's own takeaway on a saved session ────────────────────────── */
+.session-takeaway {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 0.95rem;
+  border-left: 3px solid var(--sage);
+  padding: 2px 0 2px 10px;
+  margin: 8px 0 2px;
+}
+.session-takeaway .muted {
+  font-family: var(--font-ui);
+  font-style: normal;
+  font-size: 0.76rem;
+}
+
 /* ── "Show thinking" toggle ──────────────────────────────────────────────── */
 .think-wrap { margin-top: 10px; }
 .think-toggle {

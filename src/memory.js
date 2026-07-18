@@ -298,6 +298,7 @@ function renderSessionMd(node) {
     `## Summary`,
     node.summary || "—",
     ``,
+    ...(node.takeaway ? [`## Their takeaway`, `In their own words: ${node.takeaway}`, ``] : []),
     `## Key insights`,
     insights,
     ``,
@@ -338,6 +339,9 @@ function appendSession(input, when = new Date()) {
     skills,
     relatedSessions: related.slice(0, 8),
     insights: Array.isArray(input.insights) ? input.insights : [],
+    // The person's own words from the closing ritual — kept verbatim, distinct
+    // from the model-written summary.
+    ...(input.takeaway && String(input.takeaway).trim() ? { takeaway: String(input.takeaway).trim() } : {}),
     path: path.join("sessions", `${id}.md`),
   };
 
