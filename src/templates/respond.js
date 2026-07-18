@@ -32,6 +32,7 @@ function buildRespondPrompt({
   transcript, // full conversation so far, rendered
   userMessage,
   recallBlock, // optional material from a [[recall]]/[[consult]] second pass
+  closingNote, // when set, this reply should wind the exchange down (router said close)
 }) {
   const parts = [];
 
@@ -75,6 +76,7 @@ function buildRespondPrompt({
 
   parts.push(section("CONVERSATION SO FAR", transcript));
   parts.push(section("THE PERSON'S NEW MESSAGE", userMessage));
+  if (closingNote) parts.push(section("CLOSING NOTE (wind this reply down)", closingNote));
   parts.push(
     "\n\nReply now as the companion — speak DIRECTLY to them in the second person (\"you\"), warm and plain," +
       " one idea at a time. Your first words are the actual thing you'd say. Never describe them in the third" +

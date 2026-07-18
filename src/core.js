@@ -114,6 +114,21 @@ function parseJsonLoose(text) {
   return null;
 }
 
+/** Parse a session stamp id ("YYYY-MM-DDTHH-mm-ss", local time) back into a Date; null if malformed. */
+function stampToDate(id) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})$/.exec(String(id || ""));
+  return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null;
+}
+
+/**
+ * True when text ends on a question — "?" possibly followed by closing
+ * quotes/parens (e.g. `He said "why?"`, `Right?)`). Used as the deterministic
+ * backstop for the close nudge: it must never render under a question.
+ */
+function endsWithQuestion(text) {
+  return /\?["'”’)\]]*$/.test(String(text || "").trim());
+}
+
 function renderTranscript(messages, limit = MAX_HISTORY_MSGS) {
   return messages
     .slice(-limit)
@@ -331,7 +346,18 @@ function looksLikePlanning(text) {
 async function route(cfg, session, userMessage) {
   const tailMsgs = [...session.messages, { role: "user", content: userMessage }];
   const sessionHistory = memory.listSessions().slice(0, 12).map((s) => `${s.id} — ${s.title}`).join("\n");
+  // Session-length awareness: the router can't feel a long session from a
+  // 6-message tail, so exchanges (user turns incl. this one) + elapsed minutes
+  // ride along and feed the "long session → look for a landing" close rule.
+  const exchanges = tailMsgs.filter((m) => m.role === "user").length;
+  const startedAt = stampToDate(session.startedAt);
+  let minutes = startedAt ? Math.max(0, Math.round((Date.now() - startedAt.getTime()) / 60000)) : null;
+  // current.json survives restarts, so a session resumed a day later would read
+  // as a marathon and bias the router toward closing on turn one. Beyond two
+  // hours the wall-clock is telling us about the gap, not the session — drop it.
+  if (minutes != null && minutes > 120) minutes = null;
   const prompt = T.buildRoutePrompt({
+    sessionStats: { exchanges, minutes },
     catalog: skills.routerCatalog(),
     routingTable: agentCoreRoutingTable(),
     transcriptTail: renderTranscript(tailMsgs, ROUTE_TAIL_MSGS),
@@ -379,6 +405,14 @@ function buildRecallBlock(routed, activeName) {
   return { block: parts.join("\n\n---\n\n") || null, recalledSessionId, consulted };
 }
 
+// Wind-down directive threaded into the respond prompt when the router says
+// close — otherwise the responder (especially on a high inquisitive dial) ends
+// on a fresh question and the "natural place to pause" nudge lands under it.
+const CLOSING_NOTE =
+  "This exchange has reached a natural settling point. Let this reply land: briefly reflect what they" +
+  " worked through, leave them with something to carry — and do NOT ask a new question or open a new" +
+  " thread. A warm, complete close.";
+
 function assemble(session, userMessage, active, opts = {}) {
   const skillBody = active.name ? skills.readSkillBody(active.name) : null;
   const referenceBody = active.reference ? skills.readReference(active.name, active.reference) : null;
@@ -410,6 +444,7 @@ function assemble(session, userMessage, active, opts = {}) {
     transcript: renderTranscript(session.messages),
     userMessage,
     recallBlock: opts.recallBlock || null,
+    closingNote: opts.closing ? CLOSING_NOTE : null,
   });
 }
 
@@ -433,7 +468,7 @@ async function handleTurn(userMessage, hooks = {}) {
     // suggestExplore, but it's deliberately not propagated to the UI.
   }
 
-  const opts = { recallBlock: recall.block, toneDirective: T.buildToneDirective(cfg.user || {}) };
+  const opts = { recallBlock: recall.block, toneDirective: T.buildToneDirective(cfg.user || {}), closing: close };
   if (crisis.flagged) opts.safetyDirective = safety.SAFETY_DIRECTIVE;
 
   const respondPrompt = assemble(session, userMessage, active, opts);
@@ -469,13 +504,22 @@ async function handleTurn(userMessage, hooks = {}) {
   }
   const reply = chunks.join("\n\n");
 
+  // Deterministic backstop: the nudge must never render under a question. If
+  // the router said close but the reply still ends on one (the CLOSING NOTE is
+  // guidance, not a guarantee), suppress close for the UI — the trace keeps the
+  // router's original decision so Show thinking can still explain it.
+  const routerClose = close;
+  const closeSuppressed = close && endsWithQuestion(chunks[chunks.length - 1]);
+  if (closeSuppressed) close = false;
+
   const trace = {
     activeLens: active.name,
     routerReason,
     reference: active.reference,
     recalledSessionId: recall.recalledSessionId,
     consulted: recall.consulted,
-    close,
+    close: routerClose,
+    ...(closeSuppressed ? { closeSuppressed: true } : {}),
     mode: session.mode,
     safety: crisis.flagged,
   };
@@ -902,4 +946,5 @@ module.exports = {
   splitChunks,
   sanitizeChunk,
   makeChunkStream,
+  endsWithQuestion,
 };
