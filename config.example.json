@@ -35,6 +35,7 @@
       "challenging": 3,
       "validating": 3
     },
+    "wrapAfter": 45,
     "openerStyle": "smart"
   },
   "consentAcknowledged": false,

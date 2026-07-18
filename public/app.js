@@ -13,6 +13,7 @@ let mode = localStorage.getItem("mode") || "companion";
 // Window/document listeners that must be torn down when a view re-renders,
 // or they accumulate across navigations and stack up work on every scroll/click.
 let tonePopDocHandler = null;
+let lenPopDocHandler = null;
 
 // ─── API + utils ───────────────────────────────────────────────────────────
 
@@ -584,8 +585,10 @@ async function renderChat() {
         <span id="lens" class="lens">listening</span>
         <div class="bar-actions">
           <button id="tone-btn" title="Adjust how I respond to you">Tone</button>
+          <button id="len-btn" title="Adjust how long conversations run">Length</button>
           <button id="end-btn">End session</button>
           <div id="tone-pop" class="tone-pop" style="display:none"></div>
+          <div id="len-pop" class="tone-pop" style="display:none"></div>
         </div>
       </div>
     </div>
@@ -725,6 +728,7 @@ async function renderChat() {
   input.addEventListener("input", () => autoGrow(input));
   app.querySelector("#end-btn").addEventListener("click", endSession);
   setupTonePopover();
+  setupLengthPopover();
   input.focus();
 
   async function endSession() {
@@ -815,7 +819,7 @@ function setupTonePopover() {
     }
   }
 
-  function open() { built ? refresh() : build(); pop.style.display = "block"; btn.classList.add("on"); }
+  function open() { hidePopover("#len-pop", "#len-btn"); built ? refresh() : build(); pop.style.display = "block"; btn.classList.add("on"); }
   function close() { pop.style.display = "none"; btn.classList.remove("on"); }
 
   btn.addEventListener("click", (e) => {
@@ -830,6 +834,81 @@ function setupTonePopover() {
     if (pop.style.display !== "none") close();
   };
   document.addEventListener("click", tonePopDocHandler);
+}
+
+/** Only one session-bar popover at a time: hide the other before opening. */
+function hidePopover(popSel, btnSel) {
+  const p = app.querySelector(popSel); if (p) p.style.display = "none";
+  const b = app.querySelector(btnSel); if (b) b.classList.remove("on");
+}
+
+// Quick in-chat conversation-length control: the "Length" pill expands into a
+// single slider for how many messages a session runs before the wrap-up
+// check-in. Saves automatically (debounced); applies from the next message.
+function setupLengthPopover() {
+  const btn = app.querySelector("#len-btn");
+  const pop = app.querySelector("#len-pop");
+  if (!btn || !pop) return;
+  let built = false, saveTimer = null;
+
+  const readWrap = () => wrapAfterFromUser((appConfig || {}).user || {});
+
+  function build() {
+    const wrapAfter = readWrap();
+    pop.innerHTML = `
+      <h3>How long should conversations run?</h3>
+      <div class="hint">After this many of your messages, I'll check in about wrapping up.</div>
+      <div class="dial">
+        <div class="dial-head"><b>Conversation length</b><span id="lp-val">${wrapAfter} messages</span></div>
+        <input type="range" min="${WRAP_AFTER_MIN}" max="${WRAP_AFTER_MAX}" step="1" id="lp-wrap" value="${wrapAfter}" />
+        <div class="ends"><span>Shorter sessions</span><span>Longer sessions</span></div>
+      </div>
+      <div id="lp-status"></div>`;
+    const s = pop.querySelector("#lp-wrap");
+    s.addEventListener("input", () => { pop.querySelector("#lp-val").textContent = `${s.value} messages`; scheduleSave(); });
+    pop.addEventListener("click", (e) => e.stopPropagation());
+    built = true;
+  }
+
+  function refresh() {
+    const wrapAfter = readWrap();
+    const s = pop.querySelector("#lp-wrap"); if (!s) return;
+    s.value = wrapAfter;
+    pop.querySelector("#lp-val").textContent = `${wrapAfter} messages`;
+    const status = pop.querySelector("#lp-status"); if (status) status.textContent = "";
+  }
+
+  function scheduleSave() {
+    const status = pop.querySelector("#lp-status");
+    if (status) status.textContent = "Saving…";
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(save, 400);
+  }
+
+  async function save() {
+    const wrapAfter = Number(pop.querySelector("#lp-wrap").value);
+    try {
+      const r = await api("POST", "/api/config", { user: { wrapAfter } });
+      appConfig = r.config;
+      pop.querySelector("#lp-status").textContent = "Saved — I'll use this from your next message.";
+    } catch (e) {
+      pop.querySelector("#lp-status").textContent = "Couldn't save: " + e.message;
+    }
+  }
+
+  function open() { hidePopover("#tone-pop", "#tone-btn"); built ? refresh() : build(); pop.style.display = "block"; btn.classList.add("on"); }
+  function close() { pop.style.display = "none"; btn.classList.remove("on"); }
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    pop.style.display === "none" ? open() : close();
+  });
+  if (lenPopDocHandler) document.removeEventListener("click", lenPopDocHandler);
+  lenPopDocHandler = () => {
+    if (!document.body.contains(pop)) return;
+    if (pop.style.display !== "none") close();
+  };
+  document.addEventListener("click", lenPopDocHandler);
 }
 
 /**
@@ -1477,10 +1556,20 @@ function dialsFromUser(u) {
   return { inquisitive: clamp(raw.inquisitive), challenging: clamp(raw.challenging), validating: clamp(raw.validating) };
 }
 
+// Conversation length: after this many of their messages the agent checks in
+// about wrapping up (config user.wrapAfter; engine clamps the same way).
+const WRAP_AFTER_MIN = 20, WRAP_AFTER_MAX = 60, WRAP_AFTER_DEFAULT = 45;
+function wrapAfterFromUser(u) {
+  const n = parseInt(u && u.wrapAfter, 10);
+  const v = Number.isFinite(n) ? n : WRAP_AFTER_DEFAULT;
+  return Math.min(WRAP_AFTER_MAX, Math.max(WRAP_AFTER_MIN, v));
+}
+
 async function renderSettings() {
   const cfg = appConfig || {};
   const u = cfg.user || {};
   const dials = dialsFromUser(u);
+  const wrapAfter = wrapAfterFromUser(u);
   const openerStyle = OPENER_STYLES.some((o) => o.value === u.openerStyle) ? u.openerStyle : "pickup"; // legacy smart/blurb/open → pickup
   if (!providers) { try { providers = await api("GET", "/api/providers"); } catch { providers = []; } }
   app.innerHTML = `
@@ -1499,6 +1588,16 @@ async function renderSettings() {
           <input type="range" min="1" max="5" step="1" id="s-dial-${d.key}" value="${dials[d.key]}" style="width:100%" />
           <div class="row" style="justify-content:space-between"><span class="muted" style="font-size:0.76rem">${d.lo}</span><span class="muted" style="font-size:0.76rem">${d.hi}</span></div>
         </div>`).join("")}
+      <label>How long should conversations run?</label>
+      <p class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.82rem;margin:2px 0 10px">After this many of your messages, I'll check in about wrapping up.</p>
+      <div class="tone-dial" style="margin-bottom:12px">
+        <div class="row" style="justify-content:space-between;align-items:baseline">
+          <label style="margin:0">Conversation length</label>
+          <span class="muted" id="s-wrap-val" style="font-variant-numeric:tabular-nums">${wrapAfter} messages</span>
+        </div>
+        <input type="range" min="${WRAP_AFTER_MIN}" max="${WRAP_AFTER_MAX}" step="1" id="s-wrap" value="${wrapAfter}" style="width:100%" />
+        <div class="row" style="justify-content:space-between"><span class="muted" style="font-size:0.76rem">Shorter sessions</span><span class="muted" style="font-size:0.76rem">Longer sessions</span></div>
+      </div>
       <label>How should I open our conversations?</label>
       <select id="s-opener">
         ${OPENER_STYLES.map((o) => `<option value="${o.value}" ${o.value === openerStyle ? "selected" : ""}>${esc(o.label)}</option>`).join("")}
@@ -1535,6 +1634,8 @@ async function renderSettings() {
     const out = app.querySelector(`#s-dial-val-${d.key}`);
     slider.addEventListener("input", () => { out.textContent = `${slider.value}/5`; });
   }
+  const wrapSlider = app.querySelector("#s-wrap");
+  wrapSlider.addEventListener("input", () => { app.querySelector("#s-wrap-val").textContent = `${wrapSlider.value} messages`; });
 
   app.querySelector("#s-save-you").addEventListener("click", async () => {
     try {
@@ -1546,6 +1647,7 @@ async function renderSettings() {
       const r = await api("POST", "/api/config", { user: {
         name: app.querySelector("#s-name").value.trim(),
         toneDials,
+        wrapAfter: Number(app.querySelector("#s-wrap").value),
         openerStyle: app.querySelector("#s-opener").value,
       }});
       appConfig = r.config; app.querySelector("#s-msg1").textContent = "Saved.";

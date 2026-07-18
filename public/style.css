@@ -538,7 +538,7 @@ code {
 }
 .session-bar button { padding: 7px 15px; font-size: 0.78rem; }
 .bar-actions { display: flex; align-items: center; gap: 8px; position: relative; }
-#tone-btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+#tone-btn.on, #len-btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 
 /* ── Tone popover (quick in-chat delivery dials) ─────────────────────────── */
 .tone-pop {
@@ -565,7 +565,7 @@ code {
 .tone-pop .dial-head b { font-weight: 600; }
 .tone-pop .dial-head span { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
 .tone-pop .ends { display: flex; justify-content: space-between; color: var(--ink-soft); font-size: 0.7rem; margin-top: 3px; }
-.tone-pop #tp-status { min-height: 1.1em; margin: 8px 0 0; font-size: 0.76rem; color: var(--sage); }
+.tone-pop #tp-status, .tone-pop #lp-status { min-height: 1.1em; margin: 8px 0 0; font-size: 0.76rem; color: var(--sage); }
 
 /* Range sliders (tone) */
 input[type="range"] {

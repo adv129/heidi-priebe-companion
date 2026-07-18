@@ -32,8 +32,24 @@ const ROUTE_TAIL_MSGS = 6;
 // Two-phase wrap-up hard trigger: once a session EXCEEDS this many user
 // messages, force the "ask" phase even if the router never senses a pause —
 // and, if declined, re-ask every WRAP_REASK_EVERY further user messages.
+// WRAP_ASK_THRESHOLD is the DEFAULT: the person can tune it (20–60) via
+// config user.wrapAfter — see wrapAskThreshold() — from Settings or the
+// in-chat Length pill. Config is re-read every turn, so it applies to the
+// next message with no restart.
 const WRAP_ASK_THRESHOLD = 45;
 const WRAP_REASK_EVERY = 10;
+const WRAP_AFTER_MIN = 20;
+const WRAP_AFTER_MAX = 60;
+
+/**
+ * Effective wrap-up ask threshold: user-configurable via config user.wrapAfter,
+ * clamped to 20–60; anything unset/unparsable falls back to WRAP_ASK_THRESHOLD.
+ */
+function wrapAskThreshold(cfg) {
+  const n = parseInt(cfg && cfg.user && cfg.user.wrapAfter, 10);
+  const v = Number.isFinite(n) ? n : WRAP_ASK_THRESHOLD;
+  return Math.min(WRAP_AFTER_MAX, Math.max(WRAP_AFTER_MIN, v));
+}
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
@@ -359,7 +375,7 @@ async function route(cfg, session, userMessage, exchanges) {
   // wrap-up state ride along and feed the two-phase close rules.
   const wrap = session.wrap || newWrapState();
   const prompt = T.buildRoutePrompt({
-    sessionStats: { exchanges },
+    sessionStats: { exchanges, wrapAfter: wrapAskThreshold(cfg) },
     wrapAskedAgo: wrap.askedAt != null ? exchanges - wrap.askedAt : null,
     wrapPhase: wrap.phase,
     catalog: skills.routerCatalog(),
@@ -496,12 +512,12 @@ async function handleTurn(userMessage, hooks = {}) {
     // Explore entry points are dormant for now: the router may still emit
     // suggestExplore, but it's deliberately not propagated to the UI.
 
-    // Hard trigger: past WRAP_ASK_THRESHOLD user messages the ask is forced
-    // even when the router senses no pause — and re-forced every
+    // Hard trigger: past the (user-configurable) wrap-up threshold the ask is
+    // forced even when the router senses no pause — and re-forced every
     // WRAP_REASK_EVERY further messages if declined. Never while a wind-down
     // is already underway ("begun"; the cooldown above resets that).
     if (
-      closeMove === "none" && exchanges > WRAP_ASK_THRESHOLD && wrap.phase !== "begun" &&
+      closeMove === "none" && exchanges > wrapAskThreshold(cfg) && wrap.phase !== "begun" &&
       (wrap.askedAt == null || exchanges - wrap.askedAt >= WRAP_REASK_EVERY)
     ) {
       closeMove = "ask";
@@ -999,4 +1015,5 @@ module.exports = {
   endsWithQuestion,
   WRAP_ASK_THRESHOLD,
   WRAP_REASK_EVERY,
+  wrapAskThreshold,
 };

@@ -16,6 +16,9 @@ function buildRoutePrompt({ catalog, routingTable, transcriptTail, currentSkill,
   const sessionLine = sessionStats
     ? `SESSION SO FAR: ${sessionStats.exchanges} exchange${sessionStats.exchanges === 1 ? "" : "s"}.`
     : "";
+  // The person's configured conversation length (core.wrapAskThreshold) rides
+  // along so the organic close judgment matches where the hard trigger will fire.
+  const wrapAfter = (sessionStats && sessionStats.wrapAfter) || 45;
   // Wrap-up state: the 6-message tail may not include the ask, so the router is
   // told explicitly whether (and how recently) wrapping up came up.
   let wrapLine;
@@ -56,7 +59,7 @@ Principles (from the agent-core orchestrator):
   go straight to "begin". The reply will properly wind the session down.
   If they decline an ask (not yet, keep going, a new thread opens), set "none" and do not ask
   again soon. Otherwise "none".
-  Long sessions drift; helping them land well is part of care. Past roughly 45 exchanges, lean
+  Long sessions drift; helping them land well is part of care. Past roughly ${wrapAfter} exchanges, lean
   strongly toward "ask" at the first settled moment (the app will eventually force an ask anyway).
 ${explore}
 

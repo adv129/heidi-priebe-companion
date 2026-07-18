@@ -156,6 +156,10 @@ async function handleRequest(req, res) {
     const cfg = core.loadConfig() || {};
     deepMerge(cfg, body);
 
+    // Conversation length (user.wrapAfter) is clamped on write so the stored
+    // value is always the one the engine will actually use (20–60, default 45).
+    if (cfg.user && cfg.user.wrapAfter !== undefined) cfg.user.wrapAfter = core.wrapAskThreshold(cfg);
+
     const REQUIRED = [!!(cfg.user && cfg.user.name), cfg.consentAcknowledged === true];
     const complete = REQUIRED.every(Boolean);
     if (complete) cfg.setupComplete = true;
