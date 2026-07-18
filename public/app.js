@@ -29,6 +29,58 @@ async function api(method, path, body) {
   return data;
 }
 
+/**
+ * One chat turn with progressive bubbles. Asks for SSE; onChunk(text, i) fires
+ * per bubble as the model writes. Resolves with the full done payload. If the
+ * server answers plain JSON instead (errors, or a build without SSE), the
+ * chunks are synthesized from the payload so callers never see the difference.
+ */
+async function streamChat(body, onChunk) {
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify(body),
+  });
+  const ctype = res.headers.get("content-type") || "";
+  if (ctype.includes("application/json")) {
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!res.ok) throw new Error(data.error || `${res.status}`);
+    (data.chunks && data.chunks.length ? data.chunks : [data.reply]).forEach((c, i) => onChunk(c, i));
+    return data;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let donePayload = null;
+  const handleFrame = (frame) => {
+    let event = "message", data = "";
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data += line.slice(5).trim();
+    }
+    if (!data) return;
+    let payload;
+    try { payload = JSON.parse(data); } catch { return; }
+    if (event === "chunk") onChunk(payload.text, payload.i);
+    else if (event === "done") donePayload = payload;
+    else if (event === "error") throw new Error(payload.error || "stream error");
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      handleFrame(buf.slice(0, idx)); // may throw on event: error — bubbles up
+      buf = buf.slice(idx + 2);
+    }
+  }
+  if (donePayload) return donePayload;
+  throw new Error("connection lost mid-reply");
+}
+
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
@@ -596,7 +648,12 @@ async function renderChat() {
   exploring = sess.mode === "explore";
 
   if (sess.messages && sess.messages.length) {
-    sess.messages.forEach((m) => addBubble(scroll, m.role, m.content, m.trace));
+    sess.messages.forEach((m) => {
+      // Chunked assistant messages restore as one bubble each, trace on the
+      // last only. Old messages (no chunks) render exactly as before.
+      const parts = m.role === "assistant" && m.chunks && m.chunks.length ? m.chunks : [m.content];
+      parts.forEach((p, i) => addBubble(scroll, m.role, p, i === parts.length - 1 ? m.trace : null));
+    });
     setModeLens(sess.activeSkill, false);
   } else {
     let opener = { blurb: "Hi. What's on your mind?", options: [] };
@@ -607,7 +664,6 @@ async function renderChat() {
       ...(opener.reportBacks || []).map((r) => ({ label: r.label, message: r.message, cls: "report" })),
       ...(opener.options || []),
     ];
-    if (opener.canExplore) chips.push({ label: "Get to know me better →", cls: "explore", onClick: startExplore });
     if (chips.length) renderChips(scroll, chips, input);
     if (opener.exercises && opener.exercises.length) renderExercises(scroll, opener.exercises);
   }
@@ -618,46 +674,6 @@ async function renderChat() {
   // Deep-link prefill (e.g. "Talk about this" on an experiment card in Journey).
   const prefill = sessionStorage.getItem("composerPrefill");
   if (prefill) { sessionStorage.removeItem("composerPrefill"); input.value = prefill; autoGrow(input); }
-
-  async function startExplore() {
-    // Immediate feedback: the explore opener is a real model call and can take
-    // a while — switch the lens, drop the chips, and show a typing bubble now.
-    app.querySelector("#chips")?.remove();
-    app.querySelector("#exercises")?.remove();
-    app.querySelector("#explore-nudge")?.remove();
-    exploring = true;
-    setModeLens(null, false);
-    const typing = addBubble(scroll, "assistant", "");
-    typing.classList.add("loading");
-    typing.appendChild(scrollLoader());
-    markFocused(); scrollDown();
-    try {
-      const r = await api("POST", "/api/session/mode", { mode: "explore" });
-      typing.remove();
-      if (r.opener && r.opener.blurb) {
-        addBubble(scroll, "assistant", r.opener.blurb);
-        if (r.opener.options && r.opener.options.length) renderChips(scroll, r.opener.options, input);
-      }
-      markFocused(); scrollDown();
-    } catch (e) {
-      typing.remove();
-      exploring = false;
-      setModeLens(null, false);
-      addBubble(scroll, "system", "Couldn't switch to an explore session: " + e.message);
-    }
-  }
-
-  function renderExploreNudge() {
-    app.querySelector("#explore-nudge")?.remove();
-    const div = document.createElement("div");
-    div.id = "explore-nudge"; div.className = "close-nudge";
-    div.innerHTML = `<span>There might be something here worth slowing down and digging into together.</span>
-      <button class="primary" id="explore-yes">Let's explore</button>
-      <button id="explore-no">Keep talking</button>`;
-    scroll.appendChild(div); scrollDown();
-    div.querySelector("#explore-yes").addEventListener("click", () => { div.remove(); startExplore(); });
-    div.querySelector("#explore-no").addEventListener("click", () => div.remove());
-  }
 
   const send = async (text) => {
     const msg = (text != null ? text : input.value).trim();
@@ -670,19 +686,40 @@ async function renderChat() {
     typing.appendChild(scrollLoader());
     markFocused(); scrollDown(); requestAnimationFrame(applyFocusState);
     app.querySelector("#send-btn").disabled = true;
+
+    // Bubbles stream in progressively: first chunk replaces the loader and a
+    // small persistent typing bubble trails the conversation; each later chunk
+    // slots in before it; done removes it and pins the trace on the last bubble.
+    let typingBubble = null; // the between-chunks indicator (after first chunk)
+    let lastBubble = null;   // last assistant bubble of this turn
+    const onChunk = (chunkText) => {
+      if (!typingBubble) {
+        typing.remove(); // the initial loader bubble
+        typingBubble = addBubble(scroll, "assistant", "");
+        typingBubble.classList.add("loading");
+        typingBubble.appendChild(scrollLoader());
+      }
+      const b = addBubble(scroll, "assistant", chunkText);
+      scroll.insertBefore(b, typingBubble);
+      lastBubble = b;
+      markFocused(); scrollDown(); requestAnimationFrame(applyFocusState);
+    };
+
     try {
-      const r = await api("POST", "/api/chat", { message: msg });
-      typing.classList.remove("loading");
-      typing.remove();
-      const bubble = addBubble(scroll, "assistant", r.reply, r.trace);
+      const r = await streamChat({ message: msg }, onChunk);
+      if (typingBubble) typingBubble.remove();
+      else typing.remove(); // no chunk ever arrived (shouldn't happen, but never strand the loader)
+      if (!lastBubble && r.reply) lastBubble = addBubble(scroll, "assistant", r.reply);
+      if (lastBubble) attachTrace(lastBubble, r.trace);
       exploring = r.mode === "explore";
       if (r.safety) setLens("your wellbeing comes first", true);
       else setModeLens(r.activeSkill, false);
-      if (r.suggestExplore) renderExploreNudge();
       if (r.close) renderCloseNudge(scroll);
     } catch (e) {
-      typing.classList.remove("loading");
-      typing.textContent = "(couldn't reach the model: " + e.message + ")";
+      const errBubble = typingBubble || typing;
+      errBubble.classList.remove("loading");
+      errBubble.replaceChildren();
+      errBubble.textContent = "(couldn't reach the model: " + e.message + ")";
     } finally {
       app.querySelector("#send-btn").disabled = false;
       markFocused(); scrollDown(); input.focus();
@@ -707,7 +744,6 @@ async function renderChat() {
     exploring = false;
     setLens("listening", false);
     app.querySelector("#close-nudge")?.remove();
-    app.querySelector("#explore-nudge")?.remove();
   }
 
   function renderCloseNudge(scroll) {
@@ -853,21 +889,25 @@ function addBubble(scroll, role, text, trace) {
   const div = document.createElement("div");
   div.className = "msg " + role;
   div.textContent = text;
-  if (role === "assistant" && trace && (trace.activeLens || trace.routerReason || trace.recalledSessionId)) {
-    const wrap = document.createElement("div"); wrap.className = "think-wrap";
-    const btn = document.createElement("button"); btn.className = "think-toggle"; btn.textContent = "Show thinking";
-    const panel = document.createElement("div"); panel.className = "think-panel"; panel.style.display = "none";
-    panel.innerHTML = traceHtml(trace);
-    btn.addEventListener("click", () => {
-      const open = panel.style.display !== "none";
-      panel.style.display = open ? "none" : "block";
-      btn.textContent = open ? "Show thinking" : "Hide thinking";
-    });
-    wrap.appendChild(btn); wrap.appendChild(panel);
-    div.appendChild(wrap);
-  }
+  if (role === "assistant") attachTrace(div, trace);
   scroll.appendChild(div);
   return div;
+}
+
+/** Attach the collapsible "Show thinking" trace panel to an assistant bubble. */
+function attachTrace(div, trace) {
+  if (!trace || !(trace.activeLens || trace.routerReason || trace.recalledSessionId)) return;
+  const wrap = document.createElement("div"); wrap.className = "think-wrap";
+  const btn = document.createElement("button"); btn.className = "think-toggle"; btn.textContent = "Show thinking";
+  const panel = document.createElement("div"); panel.className = "think-panel"; panel.style.display = "none";
+  panel.innerHTML = traceHtml(trace);
+  btn.addEventListener("click", () => {
+    const open = panel.style.display !== "none";
+    panel.style.display = open ? "none" : "block";
+    btn.textContent = open ? "Show thinking" : "Hide thinking";
+  });
+  wrap.appendChild(btn); wrap.appendChild(panel);
+  div.appendChild(wrap);
 }
 
 function traceHtml(t) {
@@ -970,22 +1010,34 @@ function autoGrow(t) { t.style.height = "auto"; t.style.height = Math.min(t.scro
 // ─── Journey ──────────────────────────────────────────────────────────────────
 
 const JOURNEY_SECTIONS = [
+  ["now", "Now"],
   ["timeline", "Timeline"],
   ["patterns", "Patterns"],
-  ["experiments", "Experiments"],
   ["goals", "Goals"],
   ["you", "About you"],
   ["sessions", "Sessions"],
 ];
 
-// Client-side relative time for display ("3 days ago"); handles stamp ids,
-// plain dates, and ISO. Purely cosmetic — the agent's time sense is server-side.
-function relTime(s) {
+// Whole days from a stamp id / date string to today: positive = past, negative
+// = upcoming, null = unparseable. Purely cosmetic — time sense is server-side.
+function daysAgo(s) {
   const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})-(\d{2})-(\d{2}))?/);
-  if (!m) return "";
+  if (!m) return null;
   const then = new Date(+m[1], +m[2] - 1, +m[3]);
   const now = new Date();
-  const d = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - then) / 86400000);
+  return Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - then) / 86400000);
+}
+
+function trunc(s, n) {
+  const t = String(s == null ? "" : s);
+  return t.length > n ? t.slice(0, n).trim() + "…" : t;
+}
+
+// Client-side relative time for display ("3 days ago"); handles stamp ids,
+// plain dates, and ISO.
+function relTime(s) {
+  const d = daysAgo(s);
+  if (d === null) return "";
   if (d === 0) return "today";
   if (d === 1) return "yesterday";
   if (d === -1) return "tomorrow";
@@ -999,7 +1051,9 @@ const HYP_STATUS_WORDS = { forming: "just forming", testing: "testing together",
 const GOAL_STATUS_WORDS = { active: "active", progressing: "progressing", stalled: "resting", achieved: "achieved" };
 
 async function renderJourney(section) {
-  const sec = JOURNEY_SECTIONS.some(([k]) => k === section) ? section : "timeline";
+  // Old experiments/homework deep links fall through to "now" — their content
+  // lives in the thread cards there.
+  const sec = JOURNEY_SECTIONS.some(([k]) => k === section) ? section : "now";
   app.innerHTML = `<h1>Journey</h1>
     <p class="sub">What we're learning together, and how it's moving over time.</p>
     <div class="journey-pills" id="jpills"></div>
@@ -1011,9 +1065,9 @@ async function renderJourney(section) {
   } catch (e) { body.innerHTML = `<p class="muted">Couldn't load: ${esc(e.message)}</p>`; return; }
 
   const renderers = {
+    now: () => renderNow(body, data, timeline.entries || [], select),
     timeline: () => renderJourneyTimeline(body, timeline.entries || []),
     patterns: () => renderPatterns(body, (data.profile || {}).hypotheses || [], () => renderJourney("patterns")),
-    experiments: () => renderExperiments(body, data.experiments || []),
     goals: () => renderGoals(body, (data.profile || {}).goals || []),
     you: () => renderProfileYou(body, data.profile || {}),
     sessions: () => renderSessionsList(body, data.sessions || []),
@@ -1021,18 +1075,182 @@ async function renderJourney(section) {
 
   let current = sec;
   const pills = app.querySelector("#jpills");
+  const select = (k) => {
+    current = k;
+    history.replaceState(null, "", "#/journey/" + current); // deep-linkable, no refetch
+    draw();
+    renderers[current]();
+  };
   const draw = () => {
     pills.innerHTML = JOURNEY_SECTIONS.map(([k, label]) =>
       `<span class="mc-chip ${current === k ? "sel" : ""}" data-sec="${k}">${label}</span>`).join("");
-    pills.querySelectorAll("[data-sec]").forEach((el) => el.addEventListener("click", () => {
-      current = el.dataset.sec;
-      history.replaceState(null, "", "#/journey/" + current); // deep-linkable, no refetch
-      draw();
-      renderers[current]();
-    }));
+    pills.querySelectorAll("[data-sec]").forEach((el) => el.addEventListener("click", () => select(el.dataset.sec)));
   };
   draw();
   renderers[current]();
+}
+
+// ── The "Now" landing view: one thread per active pattern, with the
+// experiments and homework linked to it nested underneath. Pure aggregation
+// over what /api/memory and /api/timeline already return — no new data.
+
+const RECENT_DAYS = 14;   // concluded experiments / reported homework stay in-thread this long
+const MOTION_DAYS = 30;   // goal movement / upcoming events horizon
+
+/**
+ * Group active hypotheses with their linked experiments + homework.
+ * Order: supported → testing → forming (→ revised), most recently updated
+ * first within a group; capped at 4 cards. "Revised" counts as active only
+ * while something open/running still hangs off it; retired never shows.
+ */
+function buildThreads(data) {
+  const profile = data.profile || {};
+  const hyps = profile.hypotheses || [];
+  const experiments = data.experiments || [];
+  const assignments = profile.assignments || [];
+  const recent = (at) => { const d = daysAgo(at); return d !== null && d >= 0 && d <= RECENT_DAYS; };
+
+  const expsFor = (id) => experiments.filter((e) => e.hypothesisId === id);
+  const hwFor = (id) => assignments.filter((a) => a.linkedHypothesisId === id);
+
+  const active = hyps.filter((h) => {
+    if (h.status === "supported" || h.status === "testing" || h.status === "forming") return true;
+    if (h.status === "revised") {
+      return expsFor(h.id).some((e) => e.status === "running") || hwFor(h.id).some((a) => a.status === "open");
+    }
+    return false; // retired (and anything unknown) never threads
+  });
+  const ORDER = { supported: 0, testing: 1, forming: 2, revised: 3 };
+  active.sort((a, b) =>
+    (ORDER[a.status] ?? 9) - (ORDER[b.status] ?? 9) || String(b.updatedAt).localeCompare(String(a.updatedAt)));
+
+  const shown = active.slice(0, 4).map((h) => ({
+    hyp: h,
+    experiments: expsFor(h.id).filter((e) =>
+      e.status === "running" || e.status === "proposed" ||
+      (e.status === "concluded" && e.outcome && recent(e.outcome.at))),
+    homework: hwFor(h.id).filter((a) =>
+      a.status === "open" || (a.status === "reported" && a.report && recent(a.report.at))),
+  }));
+  return { shown, moreCount: active.length - shown.length };
+}
+
+const NOW_SIGNAL_WORDS = { supports: "fits the pattern", complicates: "doesn't quite fit", unclear: "hard to say" };
+
+function nowExpRow(e) {
+  if (e.status === "running") {
+    const day = (daysAgo(e.startedAt) ?? 0) + 1;
+    const last = (e.checkIns || []).slice(-1)[0];
+    return `<div class="thread-row"><span class="t-kind exp">Experiment</span><span class="t-body">day ${day}: trying <strong>${esc(e.theReplacement)}</strong> instead of ${esc(e.thePattern)} — ${last ? `last check-in: ${esc(String(last.verdict).replace(/-/g, " "))}` : "no check-in yet"}</span></div>`;
+  }
+  if (e.status === "concluded") {
+    return `<div class="thread-row"><span class="t-kind exp">Experiment</span><span class="t-body">concluded: ${esc(trunc(e.outcome && e.outcome.summary, 110))}</span></div>`;
+  }
+  return `<div class="thread-row"><span class="t-kind exp">Experiment</span><span class="t-body">proposed — waiting on you: “${esc(trunc(e.theReplacement, 70))}”</span></div>`;
+}
+
+function nowHwRow(a) {
+  if (a.status === "reported" && a.report) {
+    const signal = NOW_SIGNAL_WORDS[a.report.hypothesisSignal] || NOW_SIGNAL_WORDS.unclear;
+    return `<div class="thread-row"><span class="t-kind hw">Homework</span><span class="t-body">reported: “${esc(trunc(a.report.findings, 80))}” — ${signal}</span></div>`;
+  }
+  return `<div class="thread-row"><span class="t-kind hw">Homework</span><span class="t-body">open: ${esc(a.text)}</span></div>`;
+}
+
+function renderNow(body, data, tlEntries, select) {
+  const profile = data.profile || {};
+  const experiments = data.experiments || [];
+  const assignments = profile.assignments || [];
+  const { shown, moreCount } = buildThreads(data);
+
+  // ── Header counts ──
+  const runningCount = experiments.filter((e) => e.status === "running").length;
+  const openHwCount = assignments.filter((a) => a.status === "open").length;
+  const counts = [];
+  if (shown.length) counts.push(`${shown.length} thread${shown.length === 1 ? "" : "s"} in motion`);
+  if (runningCount) counts.push(`${runningCount} experiment${runningCount === 1 ? "" : "s"} running`);
+  if (openHwCount) counts.push(`${openHwCount} homework open`);
+
+  // ── Also in motion ──
+  const shownIds = new Set(shown.map((t) => t.hyp.id));
+  // Anything active that isn't visible inside a thread card (dangling link,
+  // retired parent, or a pattern beyond the cap) surfaces here instead.
+  const looseExps = experiments.filter((e) => e.status === "running" && !shownIds.has(e.hypothesisId));
+  const looseHw = assignments.filter((a) => a.status === "open" && !shownIds.has(a.linkedHypothesisId));
+  const movedGoals = (profile.goals || []).filter((g) => {
+    if (!g || typeof g !== "object" || !(g.progress || []).length) return false;
+    const d = daysAgo(g.progress[g.progress.length - 1].at);
+    return d !== null && d >= 0 && d <= MOTION_DAYS;
+  });
+  const upcoming = tlEntries.filter((e) => {
+    if (e.type !== "upcoming") return false;
+    const d = daysAgo(e.at);
+    return d !== null && d <= 0 && d >= -MOTION_DAYS;
+  });
+
+  const nothingInMotion = !shown.length && !looseExps.length && !looseHw.length && !movedGoals.length && !upcoming.length;
+
+  // ── Compose ──
+  let html = `<div class="now-head">
+    <h2 class="now-title">Right now</h2>
+    ${counts.length ? `<p class="now-counts">${esc(counts.join(" · "))}</p>` : ""}
+  </div>`;
+
+  if (nothingInMotion) {
+    html += `<div class="card"><p class="muted">Nothing in motion yet. As we talk, patterns we notice together — and anything you agree to try — will gather here.</p></div>`;
+  }
+
+  html += shown.map((t) => {
+    const h = t.hyp;
+    const rows = [...t.experiments.map(nowExpRow), ...t.homework.map(nowHwRow)];
+    return `<div class="card thread-card">
+      <div class="thread-head">
+        <p class="thread-statement">${esc(h.statement)}</p>
+        <span class="tag status-${esc(h.status)}">${esc(HYP_STATUS_WORDS[h.status] || h.status)}</span>
+      </div>
+      ${rows.length ? `<div class="thread-rows">${rows.join("")}</div>` : ""}
+      <div class="thread-actions"><button data-th-talk="${esc(h.statement)}">Talk about this →</button></div>
+    </div>`;
+  }).join("");
+
+  if (moreCount > 0) {
+    html += `<button class="now-more" data-go="patterns">+${moreCount} more pattern${moreCount === 1 ? "" : "s"} →</button>`;
+  }
+
+  const alsoRows = [
+    ...movedGoals.map((g) => {
+      const last = g.progress[g.progress.length - 1];
+      const word = last.movement === "holding" ? "holding recently" : `moved ${esc(last.movement)} recently`;
+      return `<div class="thread-row"><span class="t-kind goal">Goal</span><span class="t-body">${esc(g.text)} — ${word}</span></div>`;
+    }),
+    ...upcoming.map((e) => {
+      const away = -daysAgo(e.at);
+      const rel = away === 0 ? "today" : away === 1 ? "tomorrow" : `${away} days away`;
+      return `<div class="thread-row"><span class="t-kind ev">Coming up</span><span class="t-body">${esc(e.title)} — ${esc(String(e.at).slice(0, 10))} (${rel})</span></div>`;
+    }),
+    ...looseExps.map(nowExpRow),
+    ...looseHw.map(nowHwRow),
+  ];
+  if (alsoRows.length) {
+    html += `<div class="now-label">Also in motion</div>
+      <div class="card also-card">${alsoRows.join("")}</div>`;
+  }
+
+  html += `<div class="now-label">Dig deeper</div>
+    <div class="dig-row">
+      <button class="mc-chip" data-go="timeline">Timeline</button>
+      <button class="mc-chip" data-go="patterns">All patterns</button>
+      <button class="mc-chip" data-go="goals">Goals</button>
+      <button class="mc-chip" data-go="sessions">Sessions</button>
+      <button class="mc-chip" data-go="you">About you</button>
+    </div>`;
+
+  body.innerHTML = html;
+  body.querySelectorAll("[data-go]").forEach((el) => el.addEventListener("click", () => select(el.dataset.go)));
+  body.querySelectorAll("[data-th-talk]").forEach((btn) => btn.addEventListener("click", () => {
+    sessionStorage.setItem("composerPrefill", `I want to dig into the pattern we've been noticing — "${btn.dataset.thTalk}".`);
+    location.hash = "#/chat";
+  }));
 }
 
 function renderJourneyTimeline(body, entries) {
@@ -1139,40 +1357,6 @@ function renderPatterns(body, hypotheses, refresh) {
     btn.disabled = true;
     try { await api("POST", `/api/memory/hypothesis/${encodeURIComponent(btn.dataset.hypId)}/vote`, { vote: btn.dataset.hypVote }); refresh(); }
     catch (e) { btn.disabled = false; alert("Couldn't record that: " + e.message); }
-  }));
-}
-
-function renderExperiments(body, experiments) {
-  if (!experiments.length) {
-    body.innerHTML = `<div class="card"><p class="muted">No experiments yet. Once a pattern is well understood and you want to change it, we'll design small experiments together — new responses to try in place of old patterns.</p></div>`;
-    return;
-  }
-  const activeExps = experiments.filter((e) => e.status !== "concluded");
-  const done = experiments.filter((e) => e.status === "concluded");
-  const card = (e) => {
-    const last = (e.checkIns || []).slice(-1)[0];
-    const meta = [
-      e.startedAt ? `started ${relTime(e.startedAt)}` : `proposed ${relTime(e.proposedAt)}`,
-      (e.checkIns || []).length ? `${e.checkIns.length} check-in${e.checkIns.length === 1 ? "" : "s"}` : "",
-      last ? `last: “${last.note}” (${last.verdict})` : "",
-    ].filter(Boolean).join(" · ");
-    return `<div class="card exp-card">
-      <div class="pill-list">
-        <span class="tag status-${esc(e.status)}">${esc(e.status)}</span>
-        ${e.strategy ? `<span class="tag">${esc(e.strategy)}</span>` : ""}
-        ${e.lens ? `<span class="tag">${esc(shortSkill(e.lens))}</span>` : ""}
-      </div>
-      <p class="exp-swap"><span class="muted">instead of</span> ${esc(e.thePattern)}<br><span class="muted">trying</span> <strong>${esc(e.theReplacement)}</strong></p>
-      <div class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.82rem">${esc(meta)}</div>
-      ${e.outcome ? `<p style="margin-bottom:0"><strong>What we learned:</strong> ${esc(e.outcome.summary)}${e.outcome.keeping === true ? " (keeping it)" : e.outcome.keeping === "adapted" ? " (adapted it)" : " (let it go)"}</p>` : `
-      <div style="margin-top:10px"><button data-exp-talk="${esc(e.theReplacement)}">Talk about this</button></div>`}
-    </div>`;
-  };
-  body.innerHTML = activeExps.map(card).join("")
-    + (done.length ? `<h2 style="font-size:1.05rem">Wrapped up</h2>` + done.map(card).join("") : "");
-  body.querySelectorAll("[data-exp-talk]").forEach((btn) => btn.addEventListener("click", () => {
-    sessionStorage.setItem("composerPrefill", `I want to check in on the experiment we set up — "${btn.dataset.expTalk}".`);
-    location.hash = "#/chat";
   }));
 }
 
@@ -1285,6 +1469,13 @@ const TONE_DIALS = [
   { key: "validating", label: "Validating", lo: "Matter-of-fact", hi: "Warmly affirming" },
 ];
 
+// Opener styles. Legacy values (smart/blurb/open) map to "pickup" when rendering.
+const OPENER_STYLES = [
+  { value: "pickup", label: "Pick up where we left off", hint: "A warm line about last time, plus a few directions to choose from." },
+  { value: "homework", label: "Check in on my homework first", hint: "Opens with what you agreed to notice or try." },
+  { value: "patterns", label: "Dig into a pattern", hint: "Offers the patterns we've been noticing — pick one to unpack." },
+];
+
 function dialsFromUser(u) {
   const raw = (u && u.toneDials) || LEGACY_TONE_TO_DIALS[u && u.tone] || { inquisitive: 3, challenging: 3, validating: 3 };
   const clamp = (n) => Math.min(5, Math.max(1, Math.round(Number(n)) || 3));
@@ -1295,6 +1486,7 @@ async function renderSettings() {
   const cfg = appConfig || {};
   const u = cfg.user || {};
   const dials = dialsFromUser(u);
+  const openerStyle = OPENER_STYLES.some((o) => o.value === u.openerStyle) ? u.openerStyle : "pickup"; // legacy smart/blurb/open → pickup
   if (!providers) { try { providers = await api("GET", "/api/providers"); } catch { providers = []; } }
   app.innerHTML = `
     <h1>Settings</h1>
@@ -1314,10 +1506,9 @@ async function renderSettings() {
         </div>`).join("")}
       <label>How should I open our conversations?</label>
       <select id="s-opener">
-        <option value="smart" ${u.openerStyle === "smart" || !u.openerStyle ? "selected" : ""}>Smart — pick up where we left off</option>
-        <option value="blurb" ${u.openerStyle === "blurb" ? "selected" : ""}>A warm line + one question</option>
-        <option value="open" ${u.openerStyle === "open" ? "selected" : ""}>Just "what's on your mind?"</option>
+        ${OPENER_STYLES.map((o) => `<option value="${o.value}" ${o.value === openerStyle ? "selected" : ""}>${esc(o.label)}</option>`).join("")}
       </select>
+      <p class="muted" id="s-opener-hint" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.82rem;margin:6px 0 0">${esc(OPENER_STYLES.find((o) => o.value === openerStyle).hint)}</p>
       <div class="row" style="margin-top:14px"><button class="primary" id="s-save-you">Save</button><span id="s-msg1" class="toast"></span></div>
     </div>
     <div class="card">
@@ -1335,6 +1526,13 @@ async function renderSettings() {
         <button id="s-newperson" title="Runs onboarding again for someone else — the current profile and sessions are archived, never inherited">Set up for a new person</button>
       </div>
     </div>`;
+
+  // Keep the sub-copy honest about whichever opener style is selected.
+  const openerSel = app.querySelector("#s-opener");
+  openerSel.addEventListener("change", () => {
+    const o = OPENER_STYLES.find((x) => x.value === openerSel.value) || OPENER_STYLES[0];
+    app.querySelector("#s-opener-hint").textContent = o.hint;
+  });
 
   // Live-update the "n/5" readout as each slider moves.
   for (const d of TONE_DIALS) {
@@ -1394,7 +1592,7 @@ const PRESET_META = {
   },
   "pre-session": {
     name: "Pre-session update",
-    desc: "Catch your therapist up on a chosen window: sessions, pattern movement, goals, experiments, and life events since they last heard from you.",
+    desc: "A quick 1–2 page update your therapist can read in two minutes: how the picture has changed, what's happened in your life, and where there's movement.",
   },
 };
 
@@ -1815,6 +2013,16 @@ function briefSectionParts(sec) {
     }
     case "window-summary":
       return { intro: P(sec.line) };
+    // ── pre-session: dense single-line sections ──
+    case "understanding":
+      return {
+        intro: sec.items && sec.items.length ? P(sec.framing, "b-framing") : "",
+        items: (sec.items || []).map((it) => ({ id: it.id, html: `<p class="b-line">${esc(it.line)}</p>` })),
+      };
+    case "happened":
+    case "progress":
+      return { items: (sec.items || []).map((it) => ({ id: it.id, html: `<p class="b-line">${esc(it.line)}</p>` })) };
+    // ── legacy pre-session sections (old saved briefs must still render) ──
     case "sessions": {
       const items = [];
       for (const wk of sec.weeks || []) {

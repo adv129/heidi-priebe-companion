@@ -12,7 +12,7 @@
 
 "use strict";
 
-const { CORE_IDENTITY, TIME_AWARENESS, EXPERIMENTS_STANCE, NON_NEGOTIABLES } = require("./system");
+const { CORE_IDENTITY, TIME_AWARENESS, EXPERIMENTS_STANCE, HOMEWORK_STANCE, NON_NEGOTIABLES } = require("./system");
 
 const EXPLORE_STANCE = `THIS IS AN EXPLORE SESSION (your stance for this whole conversation):
 Your goal is not to soothe or to teach — it is to understand this person accurately, together with them.
@@ -42,13 +42,14 @@ QUESTION CRAFT (this is the heart of the work):
   which question distinguishes one pattern from another (e.g. does distance read as danger, or as
   relief?). Don't explain the framework unless they ask.
 
-NOTICING ASSIGNMENTS (offer at most one, only when it earns its place):
+BETWEEN-SESSION HOMEWORK (offer at most one, only when it earns its place):
 - When something worth watching in real life surfaces — a pattern that only shows itself in the moment —
-  you may offer ONE small noticing assignment: "between now and next time, would you be up for noticing
-  what happens right before …?" Pure observation, never homework to perform. Only if they actually say
-  yes does it count as accepted. If they hesitate, drop it warmly.`;
+  you may offer ONE small homework item: noticing by default ("between now and next time, would you be
+  up for noticing what happens right before …?"), a small action or reflection only for a pattern
+  already confirmed with them. It is always opt-in: only if they actually say yes does it count as
+  accepted. If they hesitate, drop it warmly.`;
 
-const EXPLORE_PREAMBLE = [CORE_IDENTITY, EXPLORE_STANCE, TIME_AWARENESS, EXPERIMENTS_STANCE, NON_NEGOTIABLES].join("\n\n");
+const EXPLORE_PREAMBLE = [CORE_IDENTITY, EXPLORE_STANCE, TIME_AWARENESS, EXPERIMENTS_STANCE, HOMEWORK_STANCE, NON_NEGOTIABLES].join("\n\n");
 
 /**
  * The first message of a deliberate explore session should be a GOOD QUESTION,
@@ -76,7 +77,7 @@ ${profileBlock}
 ${timeBlock ? `TIME CONTEXT (server-computed — trust it):\n${timeBlock}\n\n` : ""}WORKING HYPOTHESES ON RECORD:
 ${hypothesesBlock || "(none yet)"}
 
-OPEN NOTICING ASSIGNMENTS:
+OPEN HOMEWORK:
 ${assignmentsBlock || "(none)"}
 
 RECENT SESSIONS:

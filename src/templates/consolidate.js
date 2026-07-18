@@ -3,7 +3,7 @@
  *
  * Runs once when a session ends — the app's single write point. Summarizes the
  * conversation, extracts durable profile updates, updates the transparent
- * working model (hypotheses + noticing assignments), records dated life events
+ * working model (hypotheses + homework), records dated life events
  * against a server-computed calendar, folds experiment progress and goal
  * movement, and pre-generates the next session's opener. Returns strict JSON
  * that memory.js / journey.js fold into the stores. Every new field is optional
@@ -37,7 +37,7 @@ ${profileBlock}
 WORKING HYPOTHESES ON RECORD (reference by id):
 ${hypothesesBlock || "(none yet)"}
 
-OPEN NOTICING ASSIGNMENTS (reference by id):
+OPEN HOMEWORK (noticing / actions / reflections — reference by id):
 ${assignmentsBlock || "(none)"}
 
 OTHER OPEN ITEMS ON RECORD (reference by id):
@@ -73,9 +73,9 @@ fields ONLY when the conversation actually produced something for them:
     "revisions": [{ "id": "hyp-…", "newStatement": "…", "why": "what didn't fit the old wording" }]
   },
   "assignmentUpdates": {
-    "reported": [{ "id": "asg-…", "findings": "what they noticed, in their words" }],
+    "reported": [{ "id": "asg-…", "findings": "what they noticed, in their words", "hypothesisSignal": "supports|complicates|unclear" }],
     "dropped": [{ "id": "asg-…", "why": "…" }],
-    "new": [{ "text": "the noticing assignment as offered AND accepted in conversation", "whatToNotice": "the specific thing to watch for", "linkedHypothesisId": "hyp-… or null" }]
+    "new": [{ "type": "notice|action|reflection", "text": "the homework as offered AND clearly accepted", "whatToNotice": "the concrete signal to watch for, and what it would tell us", "linkedHypothesisId": "hyp-… or null", "linkedHypothesisStatement": "verbatim statement ONLY if the hypothesis is created in this same consolidation", "linkedExperimentId": "exp-… or null", "accepted": true|false }]
   },
   "datedEvents": [{ "text": "a concrete upcoming life event they mentioned", "date": "YYYY-MM-DD from the calendar above", "confidence": "exact|approx" }],
   "eventFollowUps": [{ "eventId": "evt-…", "note": "how it actually went, per the conversation" }],
@@ -94,8 +94,18 @@ Rules that matter:
   honestly. When evidence contradicts a hypothesis, prefer a "revision" over retiring it (retire only if
   the person rejected it or it plainly failed). Only mark "supported" after repeated confirming instances
   AND the person themselves resonating. Statements are things-we're-noticing, never verdicts.
-- ASSIGNMENTS: create a "new" assignment ONLY if one was explicitly offered and accepted in the
-  conversation — at most ONE per session, and zero is the norm.
+- HOMEWORK: create a "new" item ONLY if one was explicitly offered and accepted in the conversation —
+  at most ONE per session, and zero is the norm. "accepted" is true ONLY if they clearly said yes;
+  hesitation is a no. Every item must link to a hypothesis or experiment — homework exists to TEST
+  something, name what it tests. Use "action" only when the linked hypothesis is testing/supported or
+  the item serves a running experiment; otherwise use "notice". Text must be small, concrete,
+  reversible, and fully within the person's own control — never confronting someone, escalating
+  conflict, contacting someone unsafe, or anything they showed reluctance about. For report-backs,
+  "hypothesisSignal" reflects what they actually said; not doing the homework is "unclear" with honest
+  findings — never a failure. When a report concerns a homework item, record it ONLY in
+  assignmentUpdates.reported — the app files the hypothesis evidence automatically, do NOT repeat it in
+  hypothesisUpdates.evidence. If a report also bears on a linked experiment, additionally emit the
+  normal experimentUpdates check-in.
 - DATED EVENTS: only concrete life events with a resolvable date (look it up in the calendar; use
   "approx" for fuzzy timing like "sometime next month"). Not feelings, not intentions. The "text" is
   shown back to the person on buttons, so make it a short neutral noun phrase with NO pronouns and NO

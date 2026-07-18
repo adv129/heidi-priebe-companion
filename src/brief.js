@@ -123,12 +123,10 @@ function longDate(when) {
   return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-/** Monday of the week containing `when`, as "Week of 7 July". */
-function weekLabel(when) {
-  const d = ta.parseWhen(when);
-  if (!d) return "";
-  const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7));
-  return `Week of ${monday.getDate()} ${MONTHS[monday.getMonth()]}`;
+/** Trim to n chars on a soft edge, with an ellipsis. */
+function trimTo(s, n) {
+  s = String(s || "").trim();
+  return s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s;
 }
 
 // --- Small renderers ----------------------------------------------------------
@@ -198,6 +196,30 @@ function hypothesisItem(h, now, windowStart) {
     else if (item.revisionNote) item.change = "rewritten this period";
   }
   return item;
+}
+
+// Pre-session line caps: the whole document should stay a 1–2 page read.
+const UNDERSTANDING_CAP = 6;
+const HAPPENED_CAP = 8;
+const PROGRESS_CAP = 10;
+
+/**
+ * One line per hypothesis for the pre-session "How the picture has changed"
+ * section: statement + status, confidence direction only if it moved this
+ * period, and a revision clause only if the window contains one. No evidence
+ * dumps, no votes — the therapist gets the movement, not the ledger.
+ */
+function understandingLine(h, win) {
+  let line = `${h.statement} — ${h.status}`;
+  if (h.confidenceTrend && h.confidenceChangedAt && inWindow(h.confidenceChangedAt, win)) {
+    line += `, confidence ${h.confidenceTrend}`;
+  }
+  const revs = (h.revisions || []).filter((r) => inWindow(r.at, win));
+  if (revs.length) {
+    const r = revs[revs.length - 1];
+    line += r.why ? ` · new: revised after “${trimTo(r.why, 80)}”` : ` · new: revised from “${trimTo(r.from, 80)}”`;
+  }
+  return line;
 }
 
 /** A hypothesis was touched in the window if anything on it is dated inside it. */
@@ -323,88 +345,27 @@ function composeBrief({ preset, windowStart = null, sections = null, excluded = 
       themes: themes.map(([name, count]) => ({ name: prettySkill(name), count })),
     });
   } else {
-    // -- pre-session update --
+    // -- pre-session update: a 1–2 page, two-minute read with three concerns —
+    // how the picture has changed, what happened, and where the movement is.
+    // Every item is one line; caps keep the whole document short. No session
+    // digests — the therapist gets the update, not the transcript.
     const winSessions = allSessions.filter((s) => inWindow(s.id, win));
-    const occurred = jv.events.filter((e) => inWindow(e.date, win) && String(e.date) <= today && e.status !== "expired");
-    const checkInCount = jv.experiments.reduce((n, e) => n + (e.checkIns || []).filter((c) => inWindow(c.at, win)).length, 0);
+    const occurred = jv.events
+      .filter((e) => inWindow(e.date, win) && String(e.date) <= today && e.status !== "expired")
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)));
 
     add("window-summary", "This period", true, {
       alwaysOn: true,
-      line: `Since ${longDate(win)} (${ta.relPhrase(win, now)}): ${winSessions.length} session${winSessions.length === 1 ? "" : "s"}, ${checkInCount} experiment check-in${checkInCount === 1 ? "" : "s"}, ${occurred.length} life event${occurred.length === 1 ? "" : "s"}.`,
+      line: `Since ${longDate(win)} (${ta.relPhrase(win, now)}): ${winSessions.length} session${winSessions.length === 1 ? "" : "s"} held.`,
     });
 
-    const sessionItems = excludeIds(winSessions.map((s) => ({
-      id: s.id,
-      date: String(s.id).slice(0, 10),
-      mode: s.mode === "explore" ? "explore" : "talk",
-      title: s.title || "Session",
-      summary: s.summary || "",
-      insights: (s.insights || []).slice(0, 3),
-    })), excluded.sessions);
-    const weeks = [];
-    for (const it of sessionItems) {
-      const label = weekLabel(it.date);
-      let wk = weeks.find((w) => w.label === label);
-      if (!wk) { wk = { label, items: [] }; weeks.push(wk); }
-      wk.items.push(it);
-    }
-    add("sessions", "Session digest", true, { weeks });
-
-    add("patterns", "Pattern movement", true, {
+    add("understanding", "How the picture has changed", true, {
       framing: "Working observations co-developed with the client — hypotheses, not conclusions.",
       items: excludeIds(profile.hypotheses
         .filter((h) => h.status !== "retired" && hypTouched(h, win))
         .sort((a, b) => (HYP_BRIEF_ORDER[a.status] ?? 9) - (HYP_BRIEF_ORDER[b.status] ?? 9) || String(b.updatedAt).localeCompare(String(a.updatedAt)))
-        .map((h) => hypothesisItem(h, now, win)), excluded.patterns),
-    });
-
-    add("goals", "Goal movement", true, {
-      items: excludeIds(profile.goals
-        .filter((g) => inWindow(g.createdAt, win) || (g.progress || []).some((pr) => inWindow(pr.at, win)))
-        .map((g) => ({
-          id: g.id,
-          text: g.text,
-          statusWord: GOAL_STATUS_WORDS[g.status] || g.status,
-          isNew: inWindow(g.createdAt, win),
-          moves: (g.progress || []).filter((pr) => inWindow(pr.at, win)).map((pr) => ({
-            date: String(pr.at).slice(0, 10),
-            arrow: MOVE_ARROWS[pr.movement] || "→",
-            movement: pr.movement,
-            note: pr.note || "",
-          })),
-        })), excluded.goals),
-    });
-
-    add("experiments", "Experiments & check-ins", true, {
-      items: excludeIds(jv.experiments
-        .filter((e) => inWindow(e.startedAt, win) || (e.checkIns || []).some((c) => inWindow(c.at, win)) || (e.outcome && inWindow(e.outcome.at, win)))
-        .map((e) => ({
-          id: e.id,
-          pattern: e.thePattern,
-          replacement: e.theReplacement,
-          strategy: e.strategy || "",
-          status: e.status,
-          startedThisPeriod: !!(e.startedAt && inWindow(e.startedAt, win)),
-          checkIns: (e.checkIns || []).filter((c) => inWindow(c.at, win)).map((c) => ({
-            date: String(c.at).slice(0, 10), note: c.note, verdict: c.verdict,
-          })),
-          outcome: e.outcome && inWindow(e.outcome.at, win)
-            ? { summary: e.outcome.summary, keeping: e.outcome.keeping === true ? "kept" : e.outcome.keeping === false ? "let go" : "adapted" }
-            : null,
-        })), excluded.experiments),
-    });
-
-    add("assignments", "Noticing assignments", true, {
-      items: excludeIds(memory.getAssignments()
-        .filter((a) => inWindow(a.givenAt, win) || (a.report && inWindow(a.report.at, win)))
-        .map((a) => ({
-          id: a.id,
-          text: a.text,
-          whatToNotice: a.whatToNotice || "",
-          status: a.status,
-          givenRel: ta.relPhrase(a.givenAt, now),
-          findings: a.report ? a.report.findings : "",
-        })), excluded.assignments),
+        .slice(0, UNDERSTANDING_CAP)
+        .map((h) => ({ id: h.id, line: understandingLine(h, win) })), excluded.understanding),
     });
 
     const horizon = jv.events.filter((e) => {
@@ -412,21 +373,43 @@ function composeBrief({ preset, windowStart = null, sections = null, excluded = 
       const d = ta.dayDiff(e.date, now);
       return d !== null && d >= -HORIZON_DAYS;
     }).sort((a, b) => String(a.date).localeCompare(String(b.date)));
-    add("events", "Life events", true, {
-      occurred: excludeIds(occurred.map((e) => ({
-        id: e.id,
-        date: String(e.date),
-        rel: ta.relPhrase(e.date, now),
-        text: e.text,
-        note: e.followUp ? e.followUp.note : "",
-      })), excluded.events),
-      horizon: excludeIds(horizon.map((e) => ({
-        id: e.id,
-        date: String(e.date),
-        rel: ta.relPhrase(e.date, now),
-        text: e.text,
-        approx: e.confidence === "approx",
-      })), excluded.events),
+    add("happened", "What's happened", true, {
+      items: excludeIds([
+        ...occurred.map((e) => ({
+          id: e.id,
+          line: `${e.text} — ${longDate(e.date)}${e.followUp && e.followUp.note ? ` · “${trimTo(e.followUp.note, 80)}”` : ""}`,
+        })),
+        ...horizon.map((e) => ({
+          id: e.id,
+          line: `${e.text} — ${e.confidence === "approx" ? "around " : ""}${longDate(e.date)} (upcoming)`,
+        })),
+      ].slice(0, HAPPENED_CAP), excluded.happened),
+    });
+
+    const goalItems = profile.goals
+      .filter((g) => (g.progress || []).some((pr) => inWindow(pr.at, win)))
+      .map((g) => {
+        const moves = g.progress.filter((pr) => inWindow(pr.at, win));
+        const last = moves[moves.length - 1];
+        return { id: g.id, line: `${g.text}: ${last.movement}${last.note ? ` — ${trimTo(last.note, 100)}` : ""}` };
+      });
+    const expItems = jv.experiments
+      .filter((e) => inWindow(e.startedAt, win) || (e.checkIns || []).some((c) => inWindow(c.at, win)) || (e.outcome && inWindow(e.outcome.at, win)))
+      .map((e) => {
+        const cs = (e.checkIns || []).filter((c) => inWindow(c.at, win));
+        const state = e.outcome && inWindow(e.outcome.at, win)
+          ? `concluded: ${trimTo(e.outcome.summary, 100)}`
+          : cs.length ? cs[cs.length - 1].verdict : "no check-in yet";
+        return { id: e.id, line: `Trying ${e.theReplacement} instead of ${e.thePattern} — ${state}` };
+      });
+    const hwItems = memory.getAssignments()
+      .filter((a) => inWindow(a.givenAt, win) || (a.report && inWindow(a.report.at, win)))
+      .map((a) => ({
+        id: a.id,
+        line: `${a.type || "notice"}: “${a.text}” — ${a.report && a.report.findings ? `reported: ${trimTo(a.report.findings, 100)}` : a.status === "dropped" ? "set aside" : "still open"}`,
+      }));
+    add("progress", "Progress & practice", true, {
+      items: excludeIds([...goalItems, ...expItems, ...hwItems].slice(0, PROGRESS_CAP), excluded.progress),
     });
 
     add("flags", "For your awareness", true, {
@@ -520,7 +503,25 @@ function digestForNarrative(composed) {
         L.push(sec.line);
         break;
       }
-      case "sessions": {
+      case "understanding": {
+        if (!sec.items.length) break;
+        S("How the picture has changed (working observations co-held with the client, NOT conclusions)");
+        for (const it of sec.items) L.push(`- ${it.line}`);
+        break;
+      }
+      case "happened": {
+        if (!sec.items.length) break;
+        S("What's happened in their life");
+        for (const it of sec.items) L.push(`- ${it.line}`);
+        break;
+      }
+      case "progress": {
+        if (!sec.items.length) break;
+        S("Progress & practice (goal movement, experiments, homework)");
+        for (const it of sec.items) L.push(`- ${it.line}`);
+        break;
+      }
+      case "sessions": { // legacy pre-session shape (kept for old saved briefs)
         if (!sec.weeks.length) break;
         S("Sessions this period");
         for (const wk of sec.weeks) {
@@ -553,9 +554,9 @@ function digestForNarrative(composed) {
       }
       case "assignments": {
         if (!sec.items.length) break;
-        S("Noticing assignments this period");
+        S("Homework / noticing assignments this period");
         for (const a of sec.items) {
-          L.push(`- "${a.text}" (given ${a.givenRel}; ${a.status})${a.findings ? ` — reported: ${a.findings}` : ""}`);
+          L.push(`- "${a.text}" (${a.type || "notice"}; given ${a.givenRel}; ${a.status})${a.findings ? ` — reported: ${a.findings}` : ""}`);
         }
         break;
       }

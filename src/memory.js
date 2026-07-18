@@ -57,7 +57,7 @@ function defaultProfile() {
     presentingConcerns: [], // recurring themes across sessions
     suspectedPatterns: [], // legacy — migrated into hypotheses on load
     hypotheses: [], // transparent working model: see applyHypothesisUpdates for shape
-    assignments: [], // noticing assignments: see applyAssignmentUpdates for shape
+    assignments: [], // typed homework (notice/action/reflection): see applyAssignmentUpdates for shape
     childhoodSignals: [],
     skillsVisited: {}, // skillName -> count
     redFlags: [],
@@ -116,6 +116,12 @@ function migrateProfile(p) {
   let changed = false;
   if (!Array.isArray(p.hypotheses)) { p.hypotheses = []; }
   if (!Array.isArray(p.assignments)) { p.assignments = []; }
+  // Typed-homework migration: older assignments predate `type`/`linkedExperimentId`.
+  for (const a of p.assignments) {
+    if (!a || typeof a !== "object") continue;
+    if (!HOMEWORK_TYPES.includes(a.type)) { a.type = "notice"; changed = true; }
+    if (a.linkedExperimentId === undefined) { a.linkedExperimentId = null; changed = true; }
+  }
   if (Array.isArray(p.suspectedPatterns) && p.suspectedPatterns.length) {
     for (const s of p.suspectedPatterns) {
       addHypothesis(p, { statement: String(s).replace(/\s*\((?:tentative|hypothesis)\)\s*$/i, ""), origin: "migrated" });
@@ -406,6 +412,8 @@ function mergeProfile(input, skills) {
 
 const HYP_STATUSES = ["forming", "testing", "supported", "revised", "retired"];
 const ASSIGNMENT_LAPSE_DAYS = 21;
+const MAX_OPEN_HOMEWORK = 3;
+const HOMEWORK_TYPES = ["notice", "action", "reflection"];
 
 function daysSince(id, now = new Date()) {
   const m = String(id || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -460,7 +468,15 @@ function applyHypothesisUpdates(updates, sessionId) {
         h.updatedAt = at;
         if (sc.status === "retired" && sc.why) h.evidence.push({ at, sessionId, note: String(sc.why), kind: "against" });
       }
-      if (["low", "medium", "high"].includes(sc.confidence)) h.confidence = sc.confidence;
+      if (["low", "medium", "high"].includes(sc.confidence) && sc.confidence !== h.confidence) {
+        // Direction + date of the last confidence move — the pre-session brief
+        // reports "confidence rising/falling" only when it changed in-window.
+        const rank = { low: 0, medium: 1, high: 2 };
+        h.confidenceTrend = rank[sc.confidence] > rank[h.confidence] ? "rising" : "falling";
+        h.confidenceChangedAt = at;
+        h.confidence = sc.confidence;
+        h.updatedAt = at;
+      }
     } catch {}
   }
   saveProfile(p);
@@ -495,22 +511,38 @@ function voteHypothesis(id, vote) {
 }
 
 /**
- * Fold consolidate output into assignments.
- * updates: { reported:[{id,findings}], dropped:[{id,why}],
- *            new:[{text,whatToNotice,linkedHypothesisId}] }
+ * Fold consolidate output into homework assignments.
+ * updates: { reported:[{id,findings,hypothesisSignal}], dropped:[{id,why}],
+ *            new:[{type,text,whatToNotice,linkedHypothesisId,linkedHypothesisStatement,linkedExperimentId,accepted}] }
+ * opts.experiments: the experiments array, injected by the caller (memory.js
+ * must not require journey.js — journey already requires memory).
+ *
+ * A report-back with a clear hypothesisSignal auto-files evidence on the linked
+ * hypothesis — the loop that lets real-world data update the working model.
+ * New items pass deterministic gates (consent, cap, link, action-readiness);
+ * a skipped item is logged, never silently dropped.
  */
-function applyAssignmentUpdates(updates, sessionId) {
+function applyAssignmentUpdates(updates, sessionId, opts = {}) {
   if (!updates || typeof updates !== "object") return;
   const p = loadProfile();
   const at = stamp().id;
   const byId = (id) => p.assignments.find((a) => a.id === id);
+  const experiments = Array.isArray(opts.experiments) ? opts.experiments : [];
 
   for (const r of Array.isArray(updates.reported) ? updates.reported.slice(0, 3) : []) {
     try {
       const a = r && byId(r.id);
       if (!a) continue;
       a.status = "reported";
-      a.report = { at, sessionId, findings: String(r.findings || "") };
+      const signal = ["supports", "complicates", "unclear"].includes(r.hypothesisSignal) ? r.hypothesisSignal : "unclear";
+      a.report = { at, sessionId, findings: String(r.findings || ""), hypothesisSignal: signal };
+      // Auto-file hypothesis evidence from the report (mirrors applyHypothesisUpdates).
+      const h = a.linkedHypothesisId ? p.hypotheses.find((x) => x.id === a.linkedHypothesisId) : null;
+      if (h && signal !== "unclear" && a.report.findings) {
+        h.evidence.push({ at, sessionId, note: `From homework "${a.text}": ${a.report.findings}`, kind: signal === "complicates" ? "against" : "for" });
+        h.updatedAt = at;
+        if (h.status === "forming") { h.status = "testing"; h.statusChangedAt = at; }
+      }
     } catch {}
   }
   for (const d of Array.isArray(updates.dropped) ? updates.dropped.slice(0, 3) : []) {
@@ -519,15 +551,46 @@ function applyAssignmentUpdates(updates, sessionId) {
   for (const n of Array.isArray(updates.new) ? updates.new.slice(0, 1) : []) {
     try {
       if (!n || !n.text) continue;
-      const linked = typeof n.linkedHypothesisId === "string" && p.hypotheses.some((h) => h.id === n.linkedHypothesisId)
-        ? n.linkedHypothesisId : null;
+      if (n.accepted !== true) {
+        console.error(`[homework] skipped "${n.text}" — not clearly accepted`);
+        continue;
+      }
+      const openCount = p.assignments.filter((a) => a.status === "open").length;
+      if (openCount >= MAX_OPEN_HOMEWORK) {
+        console.error(`[homework] skipped "${n.text}" — already carrying ${openCount} open items`);
+        continue;
+      }
+      // Resolve the hypothesis link: by id, or by statement (a hypothesis minted
+      // in this same consolidation — applyHypothesisUpdates runs first).
+      let hyp = typeof n.linkedHypothesisId === "string" ? p.hypotheses.find((h) => h.id === n.linkedHypothesisId) : null;
+      if (!hyp && n.linkedHypothesisStatement) {
+        const norm = normStatement(n.linkedHypothesisStatement);
+        hyp = p.hypotheses.find((h) => h.status !== "retired" && normStatement(h.statement) === norm)
+          || p.hypotheses.find((h) => h.status !== "retired" && (normStatement(h.statement).includes(norm) || norm.includes(normStatement(h.statement))));
+      }
+      const exp = typeof n.linkedExperimentId === "string" ? experiments.find((e) => e && e.id === n.linkedExperimentId) : null;
+      if (!hyp && !exp) {
+        console.error(`[homework] skipped "${n.text}" — no valid hypothesis or experiment link`);
+        continue;
+      }
+      const type = HOMEWORK_TYPES.includes(n.type) ? n.type : "notice";
+      if (type === "action") {
+        const hypReady = !!(hyp && (hyp.status === "testing" || hyp.status === "supported"));
+        const expRunning = !!(exp && exp.status === "running");
+        if (!hypReady && !expRunning) {
+          console.error(`[homework] skipped action "${n.text}" — linked hypothesis not testing/supported and no running experiment`);
+          continue;
+        }
+      }
       p.assignments.push({
         id: newId("asg", p.assignments.map((a) => a.id)),
+        type,
         text: String(n.text),
         whatToNotice: String(n.whatToNotice || n.text),
         givenAt: at,
         givenInSessionId: sessionId || null,
-        linkedHypothesisId: linked,
+        linkedHypothesisId: hyp ? hyp.id : null,
+        linkedExperimentId: exp ? exp.id : null,
         status: "open",
         nudgedAt: null,
         report: null,
@@ -597,15 +660,24 @@ function hypothesesContext({ mode = "talk" } = {}) {
   }).join("\n");
 }
 
-/** Open noticing assignments, with age; lapsed ones get a gentle one-time follow-up note. */
+/** Open homework items, with type + signal + age; lapsed ones get a gentle one-time follow-up note. */
 function assignmentsContext(now = new Date()) {
-  const open = openAssignments();
+  const p = loadProfile();
+  const open = p.assignments.filter((a) => a.status === "open");
   if (!open.length) return "";
-  return open.map((a) => {
+  const lines = open.map((a) => {
     const age = daysSince(a.givenAt, now);
     const lapsed = age !== null && age > ASSIGNMENT_LAPSE_DAYS;
-    return `- [${a.id}] given ${age === null ? "recently" : age === 0 ? "today" : `${age} day${age === 1 ? "" : "s"} ago`}: "${a.text}"${a.linkedHypothesisId ? ` (linked to ${a.linkedHypothesisId})` : ""}${lapsed ? "\n    (it's been a while — if it fits, ask ONCE, gently, and offer to reshape or drop it; no guilt)" : ""}`;
-  }).join("\n");
+    const hyp = a.linkedHypothesisId ? p.hypotheses.find((h) => h.id === a.linkedHypothesisId) : null;
+    const link = hyp ? ` (testing: "${hyp.statement}")` : a.linkedExperimentId ? ` (serving experiment ${a.linkedExperimentId})` : "";
+    const signal = a.whatToNotice && a.whatToNotice !== a.text ? ` — watching for: ${a.whatToNotice}` : "";
+    return `- [${a.id}] (${a.type || "notice"}) given ${age === null ? "recently" : age === 0 ? "today" : `${age} day${age === 1 ? "" : "s"} ago`}: "${a.text}"${signal}${link}${lapsed ? "\n    (it's been a while — if it fits, ask ONCE, gently, and offer to reshape or drop it; no guilt)" : ""}`;
+  });
+  // Deterministic gate line for the model (enforced again at fold time).
+  lines.push(open.length >= MAX_OPEN_HOMEWORK
+    ? `(they are carrying ${open.length} of ${MAX_OPEN_HOMEWORK} open homework items — do not offer more)`
+    : `(action homework only for a confirmed pattern or a running experiment; noticing/reflection fits anything we're testing)`);
+  return lines.join("\n");
 }
 
 // --- Read path: context injection ------------------------------------------
@@ -638,7 +710,7 @@ function profileContext(profile = loadProfile()) {
   const activeHyps = p.hypotheses.filter((h) => h.status === "testing" || h.status === "supported");
   if (activeHyps.length) lines.push(`Things we're noticing together (hold lightly — test, don't confirm): ${activeHyps.slice(0, 5).map((h) => `${h.statement} (${h.status})`).join("; ")}`);
   const openAsgCount = p.assignments.filter((a) => a.status === "open").length;
-  if (openAsgCount) lines.push(`They're carrying ${openAsgCount} open noticing assignment${openAsgCount === 1 ? "" : "s"} (details in the assignments block, if present).`);
+  if (openAsgCount) lines.push(`They're carrying ${openAsgCount} open homework item${openAsgCount === 1 ? "" : "s"} (details in the assignments block, if present).`);
   const visited = Object.entries(p.skillsVisited).sort((a, b) => b[1] - a[1]);
   if (visited.length) lines.push(`Frameworks touched before: ${visited.map(([k, v]) => `${k} (${v}x)`).join(", ")}`);
   if (p.redFlags.length) lines.push(`Flags on record: ${p.redFlags.join("; ")}`);
@@ -801,4 +873,5 @@ module.exports = {
   getAssignments,
   openAssignments,
   ASSIGNMENT_LAPSE_DAYS,
+  MAX_OPEN_HOMEWORK,
 };

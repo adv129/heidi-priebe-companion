@@ -26,7 +26,7 @@ function buildRespondPrompt({
   profileBlock,
   timeBlock, // server-computed time context (dates, gaps, aging items)
   understandingBlock, // working hypotheses (test, don't confirm)
-  assignmentsBlock, // open noticing assignments
+  assignmentsBlock, // open homework items
   experimentsBlock, // running/proposed experiments + the propose-gate line
   skillHistoryBlock,
   transcript, // full conversation so far, rendered
@@ -60,7 +60,7 @@ function buildRespondPrompt({
   parts.push(section("WHAT YOU KNOW ABOUT THIS PERSON (profile)", profileBlock));
   parts.push(section("TIME CONTEXT (server-computed — trust these dates, never recompute them)", timeBlock));
   parts.push(section("WHAT WE'RE NOTICING TOGETHER (working hypotheses — hold lightly, test, don't confirm)", understandingBlock));
-  parts.push(section("THINGS THEY AGREED TO NOTICE (open assignments)", assignmentsBlock));
+  parts.push(section("HOMEWORK THEY'RE CARRYING (things they agreed to notice, try, or reflect on — and whether offering more is appropriate)", assignmentsBlock));
   parts.push(section("EXPERIMENTS (running / proposed — and whether proposing is appropriate)", experimentsBlock));
   parts.push(
     section(
@@ -78,7 +78,8 @@ function buildRespondPrompt({
   parts.push(
     "\n\nReply now as the companion — speak DIRECTLY to them in the second person (\"you\"), warm and plain," +
       " one idea at a time. Your first words are the actual thing you'd say. Never describe them in the third" +
-      " person and never narrate your plan or intentions; output only what you'd say aloud."
+      " person and never narrate your plan or intentions; output only what you'd say aloud." +
+      " Break the reply into 1–4 short messages separated by a line containing only [NEXT]."
   );
 
   return parts.filter(Boolean).join("");

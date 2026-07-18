@@ -11,10 +11,13 @@
 
 function buildBriefNarrativePrompt({ preset, clientName, todayLine, windowLine, digest }) {
   const name = clientName || "The client";
+  const paragraphs = preset === "pre-session" ? "2-3" : "3-4";
   const task = preset === "pre-session"
-    ? `This is a PRE-SESSION UPDATE: summarize what has moved ${windowLine || "recently"} — sessions,
-pattern movement, goal movement, experiments, life events. Lead with the most clinically useful
-change, not a chronology. Close with what seems most alive walking into the next session.`
+    ? `This is a PRE-SESSION UPDATE the therapist will read in the two minutes before a session
+(${windowLine || "covering recent weeks"}). Structure it as: (a) how the understanding of ${name}
+has shifted over this period, (b) what has actually happened in their life, (c) where there is
+movement and where things are stuck. No session-by-session recap. A therapist should be able to
+read this in two minutes.`
     : `This is a FIRST-MEETING INTRODUCTION: introduce who ${name} is, their presenting picture,
 what they're working toward, and what a therapist would want to know walking into a first
 session. Lead with the person, not the app.`;
@@ -30,7 +33,7 @@ TODAY IS: ${todayLine}
 EVERYTHING YOU MAY DRAW ON (the person chose exactly what to share — reference NOTHING beyond this):
 ${digest}
 
-Write 3-4 short paragraphs of plain prose. Rules:
+Write ${paragraphs} short paragraphs of plain prose. Rules:
 - Plain text only: no markdown, no headings, no bullets, no preamble or sign-off — start directly
   with the first paragraph.
 - Third person, by first name ("${name} reports…", "${name} describes…"). Clinical-but-warm
@@ -44,7 +47,7 @@ Write 3-4 short paragraphs of plain prose. Rules:
   consolidation) by jargon; translate to plain language a clinician outside the app understands.
 - Do not evaluate or praise the person ("impressive", "remarkable growth") — describe.
 
-Your 3-4 paragraphs:`;
+Your ${paragraphs} paragraphs:`;
 }
 
 module.exports = { buildBriefNarrativePrompt };
