@@ -32,7 +32,8 @@ function buildRespondPrompt({
   transcript, // full conversation so far, rendered
   userMessage,
   recallBlock, // optional material from a [[recall]]/[[consult]] second pass
-  closingNote, // when set, this reply should wind the exchange down (router said close)
+  wrapAskNote, // when set, this reply should ASK about wrapping up (close phase "ask")
+  closingNote, // when set, this reply should wind the exchange down (close phase "begin")
 }) {
   const parts = [];
 
@@ -76,6 +77,7 @@ function buildRespondPrompt({
 
   parts.push(section("CONVERSATION SO FAR", transcript));
   parts.push(section("THE PERSON'S NEW MESSAGE", userMessage));
+  if (wrapAskNote) parts.push(section("WRAP-UP CHECK (ask, don't wind down)", wrapAskNote));
   if (closingNote) parts.push(section("CLOSING NOTE (wind this reply down)", closingNote));
   parts.push(
     "\n\nReply now as the companion — speak DIRECTLY to them in the second person (\"you\"), warm and plain," +

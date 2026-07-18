@@ -29,6 +29,12 @@ const CURRENT_PATH = path.join(memory.MEM_DIR, "current.json");
 const MAX_HISTORY_MSGS = 24;
 const ROUTE_TAIL_MSGS = 6;
 
+// Two-phase wrap-up hard trigger: once a session EXCEEDS this many user
+// messages, force the "ask" phase even if the router never senses a pause —
+// and, if declined, re-ask every WRAP_REASK_EVERY further user messages.
+const WRAP_ASK_THRESHOLD = 45;
+const WRAP_REASK_EVERY = 10;
+
 // ─── Config ────────────────────────────────────────────────────────────────
 
 function loadConfig() {
@@ -41,8 +47,12 @@ function saveConfig(cfg) {
 
 // ─── Current session (persisted so a restart doesn't lose it) ────────────────
 
+// wrap = two-phase close state: askedAt is the exchange count (user turns) at
+// the last wrap-up move (ask OR begin), phase is "none" | "asked" | "begun".
+function newWrapState() { return { askedAt: null, phase: "none" }; }
+
 function newSession(mode = "talk") {
-  return { id: memory.stamp().id, startedAt: memory.stamp().id, mode, messages: [], skillsUsed: [], activeSkill: null };
+  return { id: memory.stamp().id, startedAt: memory.stamp().id, mode, messages: [], skillsUsed: [], activeSkill: null, wrap: newWrapState() };
 }
 function loadCurrent() {
   try {
@@ -50,6 +60,11 @@ function loadCurrent() {
     s.messages = s.messages || [];
     s.skillsUsed = s.skillsUsed || [];
     s.mode = s.mode === "explore" ? "explore" : "talk";
+    // Older current.json files predate the wrap state — default it on load.
+    const w = s.wrap;
+    s.wrap = w && typeof w === "object"
+      ? { askedAt: Number.isFinite(w.askedAt) ? w.askedAt : null, phase: ["asked", "begun"].includes(w.phase) ? w.phase : "none" }
+      : newWrapState();
     return s;
   } catch { return null; }
 }
@@ -112,12 +127,6 @@ function parseJsonLoose(text) {
     }
   }
   return null;
-}
-
-/** Parse a session stamp id ("YYYY-MM-DDTHH-mm-ss", local time) back into a Date; null if malformed. */
-function stampToDate(id) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})$/.exec(String(id || ""));
-  return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null;
 }
 
 /**
@@ -343,21 +352,17 @@ function looksLikePlanning(text) {
 
 // ─── Turn pipeline ─────────────────────────────────────────────────────────
 
-async function route(cfg, session, userMessage) {
+async function route(cfg, session, userMessage, exchanges) {
   const tailMsgs = [...session.messages, { role: "user", content: userMessage }];
   const sessionHistory = memory.listSessions().slice(0, 12).map((s) => `${s.id} — ${s.title}`).join("\n");
-  // Session-length awareness: the router can't feel a long session from a
-  // 6-message tail, so exchanges (user turns incl. this one) + elapsed minutes
-  // ride along and feed the "long session → look for a landing" close rule.
-  const exchanges = tailMsgs.filter((m) => m.role === "user").length;
-  const startedAt = stampToDate(session.startedAt);
-  let minutes = startedAt ? Math.max(0, Math.round((Date.now() - startedAt.getTime()) / 60000)) : null;
-  // current.json survives restarts, so a session resumed a day later would read
-  // as a marathon and bias the router toward closing on turn one. Beyond two
-  // hours the wall-clock is telling us about the gap, not the session — drop it.
-  if (minutes != null && minutes > 120) minutes = null;
+  // The router can't feel a long session (or a pending wrap-up ask) from a
+  // 6-message tail, so the exchange count (user turns incl. this one) and the
+  // wrap-up state ride along and feed the two-phase close rules.
+  const wrap = session.wrap || newWrapState();
   const prompt = T.buildRoutePrompt({
-    sessionStats: { exchanges, minutes },
+    sessionStats: { exchanges },
+    wrapAskedAgo: wrap.askedAt != null ? exchanges - wrap.askedAt : null,
+    wrapPhase: wrap.phase,
     catalog: skills.routerCatalog(),
     routingTable: agentCoreRoutingTable(),
     transcriptTail: renderTranscript(tailMsgs, ROUTE_TAIL_MSGS),
@@ -372,7 +377,18 @@ async function route(cfg, session, userMessage) {
     const parsed = parseJsonLoose(raw);
     if (parsed) return parsed;
   } catch (e) { console.error(`[route] ${e.message}`); }
-  return { skill: "stay", reference: null, recall: null, consult: null, close: false, suggestExplore: false, reason: "router-fallback" };
+  return { skill: "stay", reference: null, recall: null, consult: null, close: "none", suggestExplore: false, reason: "router-fallback" };
+}
+
+/**
+ * Normalize the router's "close" field to a wrap-up move. Tolerates the legacy
+ * boolean contract (true meant "sensed a pause" → the modern "ask") and any
+ * malformed value (→ "none").
+ */
+function normalizeCloseMove(v) {
+  if (v === "ask" || v === "begin" || v === "none") return v;
+  if (v === true || v === "true") return "ask";
+  return "none";
 }
 
 function resolveActiveSkill(routed, session) {
@@ -405,13 +421,25 @@ function buildRecallBlock(routed, activeName) {
   return { block: parts.join("\n\n---\n\n") || null, recalledSessionId, consulted };
 }
 
-// Wind-down directive threaded into the respond prompt when the router says
-// close — otherwise the responder (especially on a high inquisitive dial) ends
-// on a fresh question and the "natural place to pause" nudge lands under it.
+// Two-phase wrap-up directives threaded into the respond prompt.
+//
+// Phase "ask": the reply checks in about wrapping up — one woven-in question,
+// no winding down yet, no UI nudge.
+const WRAP_ASK_NOTE =
+  "This exchange feels like it may be reaching a settling point. Within your reply, gently ask whether" +
+  " this feels like a good place to start wrapping up — one natural sentence woven into what you're" +
+  " already saying, not a formal checkpoint. Do NOT start winding down yet: if they'd rather keep" +
+  " going, nothing changes.";
+
+// Phase "begin": they've assented (or asked to wrap) — the reply lands the
+// session. Written to end WITHOUT a question, otherwise the responder
+// (especially on a high inquisitive dial) opens a fresh thread and the
+// wrap-up nudge renders under it.
 const CLOSING_NOTE =
-  "This exchange has reached a natural settling point. Let this reply land: briefly reflect what they" +
-  " worked through, leave them with something to carry — and do NOT ask a new question or open a new" +
-  " thread. A warm, complete close.";
+  "They're ready to wrap up. Let this reply land the session: briefly reflect the arc of what they" +
+  " worked through today, and mention anything they're carrying between sessions — open homework, a" +
+  " running experiment (only what's real in the context above; nothing if there's nothing). End warmly," +
+  " and do NOT ask a new question or open a new thread. A complete close.";
 
 function assemble(session, userMessage, active, opts = {}) {
   const skillBody = active.name ? skills.readSkillBody(active.name) : null;
@@ -444,7 +472,8 @@ function assemble(session, userMessage, active, opts = {}) {
     transcript: renderTranscript(session.messages),
     userMessage,
     recallBlock: opts.recallBlock || null,
-    closingNote: opts.closing ? CLOSING_NOTE : null,
+    wrapAskNote: opts.closeMove === "ask" ? WRAP_ASK_NOTE : null,
+    closingNote: opts.closeMove === "begin" ? CLOSING_NOTE : null,
   });
 }
 
@@ -452,23 +481,45 @@ async function handleTurn(userMessage, hooks = {}) {
   const cfg = loadConfig() || {};
   const session = ensureSession();
   const crisis = safety.crisisCheck(userMessage);
+  const wrap = session.wrap || (session.wrap = newWrapState());
+  const exchanges = session.messages.filter((m) => m.role === "user").length + 1; // incl. this one
+
+  // Post-begun cooldown: a wind-down happened but the person kept talking well
+  // past it (WRAP_REASK_EVERY exchanges) without ending — treat the wrap-up as
+  // abandoned so the flow (incl. the hard trigger) can start over from "none".
+  if (wrap.phase === "begun" && wrap.askedAt != null && exchanges - wrap.askedAt >= WRAP_REASK_EVERY) {
+    wrap.phase = "none";
+  }
 
   let active = { name: null, reference: null };
   let recall = { block: null, recalledSessionId: null, consulted: null };
-  let close = false;
+  let closeMove = "none";
+  let wrapForced = false;
   let routerReason = null;
 
   if (!crisis.flagged) {
-    const routed = await route(cfg, session, userMessage);
+    const routed = await route(cfg, session, userMessage, exchanges);
     active = resolveActiveSkill(routed, session);
     recall = buildRecallBlock(routed, active.name);
-    close = routed.close === true;
+    closeMove = normalizeCloseMove(routed.close);
     routerReason = routed.reason || null;
     // Explore entry points are dormant for now: the router may still emit
     // suggestExplore, but it's deliberately not propagated to the UI.
+
+    // Hard trigger: past WRAP_ASK_THRESHOLD user messages the ask is forced
+    // even when the router senses no pause — and re-forced every
+    // WRAP_REASK_EVERY further messages if declined. Never while a wind-down
+    // is already underway ("begun"; the cooldown above resets that).
+    if (
+      closeMove === "none" && exchanges > WRAP_ASK_THRESHOLD && wrap.phase !== "begun" &&
+      (wrap.askedAt == null || exchanges - wrap.askedAt >= WRAP_REASK_EVERY)
+    ) {
+      closeMove = "ask";
+      wrapForced = true;
+    }
   }
 
-  const opts = { recallBlock: recall.block, toneDirective: T.buildToneDirective(cfg.user || {}), closing: close };
+  const opts = { recallBlock: recall.block, toneDirective: T.buildToneDirective(cfg.user || {}), closeMove };
   if (crisis.flagged) opts.safetyDirective = safety.SAFETY_DIRECTIVE;
 
   const respondPrompt = assemble(session, userMessage, active, opts);
@@ -504,11 +555,19 @@ async function handleTurn(userMessage, hooks = {}) {
   }
   const reply = chunks.join("\n\n");
 
-  // Deterministic backstop: the nudge must never render under a question. If
-  // the router said close but the reply still ends on one (the CLOSING NOTE is
-  // guidance, not a guarantee), suppress close for the UI — the trace keeps the
-  // router's original decision so Show thinking can still explain it.
-  const routerClose = close;
+  // Advance the wrap-up state now that the reply exists. askedAt records the
+  // exchange count of the LAST wrap move (ask or begin) — it drives both the
+  // re-ask cadence and the post-begun cooldown.
+  if (closeMove === "ask") { wrap.askedAt = exchanges; wrap.phase = "asked"; }
+  else if (closeMove === "begin") { wrap.askedAt = exchanges; wrap.phase = "begun"; }
+
+  // The nudge renders only for the "begin" phase (the wind-down reply), and a
+  // deterministic backstop keeps it from ever landing under a question: if the
+  // begin reply still ends on one (the CLOSING NOTE is guidance, not a
+  // guarantee), suppress it for the UI. An "ask" reply legitimately ends on a
+  // question — no nudge there by design. The trace keeps the resolved move so
+  // Show thinking can still explain it.
+  let close = closeMove === "begin";
   const closeSuppressed = close && endsWithQuestion(chunks[chunks.length - 1]);
   if (closeSuppressed) close = false;
 
@@ -518,7 +577,8 @@ async function handleTurn(userMessage, hooks = {}) {
     reference: active.reference,
     recalledSessionId: recall.recalledSessionId,
     consulted: recall.consulted,
-    close: routerClose,
+    closeMove,
+    ...(wrapForced ? { wrapForced: true } : {}),
     ...(closeSuppressed ? { closeSuppressed: true } : {}),
     mode: session.mode,
     safety: crisis.flagged,
@@ -947,4 +1007,6 @@ module.exports = {
   sanitizeChunk,
   makeChunkStream,
   endsWithQuestion,
+  WRAP_ASK_THRESHOLD,
+  WRAP_REASK_EVERY,
 };
