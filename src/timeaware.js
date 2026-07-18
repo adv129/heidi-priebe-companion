@@ -173,7 +173,7 @@ function timeContext({ now = new Date(), sessions = [], events = [], experiments
     const day = (dayDiff(e.startedAt, now) || 0) + 1;
     const lastCheck = e.checkIns && e.checkIns.length ? e.checkIns[e.checkIns.length - 1] : null;
     const checkBit = lastCheck ? `, last check-in ${relPhrase(lastCheck.at, now)} (${lastCheck.verdict})` : ", no check-ins yet";
-    lines.push(`Running experiment: trying "${e.theReplacement}" instead of "${e.thePattern}" — day ${day}${checkBit}.`);
+    lines.push(`Running experiment: trying "${e.theReplacement}"${e.thePattern ? ` instead of "${e.thePattern}"` : ""} — day ${day}${checkBit}.`);
   }
 
   if (quietGoals.length) {

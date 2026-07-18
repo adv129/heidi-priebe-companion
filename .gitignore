@@ -12,6 +12,7 @@ memory/sessions/
 memory/experiments.json
 memory/timeline.json
 memory/briefs.json
+memory/pending-save.json
 memory/archive-*/
 memory.bak/
 memory.sim-safekeeping/

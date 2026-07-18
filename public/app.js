@@ -13,6 +13,7 @@ let mode = localStorage.getItem("mode") || "companion";
 // Window/document listeners that must be torn down when a view re-renders,
 // or they accumulate across navigations and stack up work on every scroll/click.
 let tonePopDocHandler = null;
+let lenPopDocHandler = null;
 
 // ─── API + utils ───────────────────────────────────────────────────────────
 
@@ -584,8 +585,10 @@ async function renderChat() {
         <span id="lens" class="lens">listening</span>
         <div class="bar-actions">
           <button id="tone-btn" title="Adjust how I respond to you">Tone</button>
+          <button id="len-btn" title="Adjust how long conversations run">Length</button>
           <button id="end-btn">End session</button>
           <div id="tone-pop" class="tone-pop" style="display:none"></div>
+          <div id="len-pop" class="tone-pop" style="display:none"></div>
         </div>
       </div>
     </div>
@@ -723,20 +726,62 @@ async function renderChat() {
   app.querySelector("#send-btn").addEventListener("click", () => send());
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
   input.addEventListener("input", () => autoGrow(input));
-  app.querySelector("#end-btn").addEventListener("click", endSession);
+  app.querySelector("#end-btn").addEventListener("click", () => renderClosingCard());
   setupTonePopover();
+  setupLengthPopover();
   input.focus();
 
-  async function endSession() {
-    if (!confirm("End this session? I'll save a short summary to memory.")) return;
-    const note = addBubble(scroll, "system", "Saving this session to memory…"); scrollDown();
-    try {
-      const r = await api("POST", "/api/session/end", {});
-      note.textContent = r.ended ? `Saved: "${r.node.title}". You'll find it under Memory.` : "Nothing to save yet.";
-    } catch (e) { note.textContent = "Couldn't save: " + e.message; }
-    exploring = false;
-    setLens("listening", false);
+  // The closing ritual: instead of a confirm() dialog, an in-chat card asks
+  // for a takeaway (their own words) and something to try this week. Both
+  // optional — Skip ends the session without them; Keep talking cancels.
+  function renderClosingCard() {
+    const existing = app.querySelector("#closing-card");
+    if (existing) { existing.querySelector("#cc-takeaway").focus(); return; }
     app.querySelector("#close-nudge")?.remove();
+    const div = document.createElement("div");
+    div.id = "closing-card"; div.className = "closing-card";
+    div.innerHTML = `
+      <div class="row spread" style="align-items:baseline">
+        <h3>Before this session closes…</h3>
+        <button class="closing-x" id="cc-x" title="Keep talking">×</button>
+      </div>
+      <label for="cc-takeaway">A takeaway to remember</label>
+      <textarea id="cc-takeaway" rows="2" maxlength="500" placeholder="In your own words — what are you taking from today?"></textarea>
+      <label for="cc-experiment">Something to try this week</label>
+      <textarea id="cc-experiment" rows="2" maxlength="500" placeholder="A small experiment you want to run before next time."></textarea>
+      <div class="row closing-actions">
+        <button class="primary" id="cc-save">Save &amp; finish</button>
+        <button id="cc-skip">Skip &amp; finish</button>
+        <button class="closing-keep" id="cc-keep">Keep talking</button>
+      </div>`;
+    scroll.appendChild(div); scrollDown();
+    const cancel = () => div.remove();
+    div.querySelector("#cc-x").addEventListener("click", cancel);
+    div.querySelector("#cc-keep").addEventListener("click", cancel);
+    div.addEventListener("keydown", (e) => { if (e.key === "Escape") cancel(); });
+    div.querySelector("#cc-save").addEventListener("click", () => finishSession({
+      takeaway: div.querySelector("#cc-takeaway").value.trim(),
+      experiment: div.querySelector("#cc-experiment").value.trim(),
+    }));
+    div.querySelector("#cc-skip").addEventListener("click", () => finishSession({}));
+    setTimeout(() => div.querySelector("#cc-takeaway").focus(), 0);
+  }
+
+  // End the session: one fast POST (the save itself runs in the background,
+  // tracked by the app-wide pill), then a fresh opener. No blocking bubble.
+  async function finishSession(ritual) {
+    const card = app.querySelector("#closing-card");
+    if (card) card.querySelectorAll("button, textarea").forEach((el) => (el.disabled = true));
+    try {
+      const r = await api("POST", "/api/session/end", ritual);
+      if (r.ended) startSaveWatch(); // pill appears; polls until done/error
+      exploring = false;
+      await renderChat(); // fresh opener immediately — the user can keep going or navigate away
+    } catch (e) {
+      if (card) card.querySelectorAll("button, textarea").forEach((el) => (el.disabled = false));
+      addBubble(scroll, "system", "Couldn't end the session: " + e.message);
+      scrollDown();
+    }
   }
 
   function renderCloseNudge(scroll) {
@@ -747,10 +792,73 @@ async function renderChat() {
       <button class="primary" id="wrap-btn">Wrap up &amp; save</button>
       <button id="keep-btn">Keep talking</button>`;
     scroll.appendChild(div); scrollDown();
-    div.querySelector("#wrap-btn").addEventListener("click", endSession);
+    div.querySelector("#wrap-btn").addEventListener("click", () => renderClosingCard());
     div.querySelector("#keep-btn").addEventListener("click", () => div.remove());
   }
 }
+
+// ─── Background-save indicator (app-wide pill in the top bar) ─────────────────
+//
+// Lives in #topbar so it survives view re-renders — the user can wander to
+// Journey/Settings while the consolidate runs. Polls /api/session/save-status
+// every 3s while a save is in flight; "Saved: {title}" lingers ~6s, an error
+// shows the session-kept reassurance a little longer. On page load, a save
+// already in flight (reload mid-save) resumes the pill.
+
+let savePollTimer = null, saveHideTimer = null;
+
+function savePillEl() {
+  let el = document.getElementById("save-pill");
+  if (!el) {
+    el = document.createElement("span");
+    el.id = "save-pill";
+    const right = document.querySelector("#topbar .top-right");
+    if (right) right.parentNode.insertBefore(el, right);
+    else document.getElementById("topbar")?.appendChild(el);
+  }
+  return el;
+}
+
+function showSavePill(text, cls) {
+  const el = savePillEl();
+  el.className = "save-pill " + (cls || "");
+  el.textContent = text;
+  el.style.display = "";
+}
+
+function hideSavePill() {
+  const el = document.getElementById("save-pill");
+  if (el) el.style.display = "none";
+}
+
+function startSaveWatch() {
+  clearTimeout(saveHideTimer);
+  if (savePollTimer) clearInterval(savePollTimer);
+  showSavePill("Saving session…", "saving");
+  savePollTimer = setInterval(async () => {
+    let st;
+    try { st = await api("GET", "/api/session/save-status"); } catch { return; } // transient — keep polling
+    if (st.state === "saving") return;
+    clearInterval(savePollTimer); savePollTimer = null;
+    if (st.state === "done") {
+      showSavePill(`Saved: “${trunc(st.title || "session", 42)}”`, "done");
+      saveHideTimer = setTimeout(hideSavePill, 6000);
+    } else if (st.state === "error") {
+      showSavePill("Session kept — saving hit a snag", "error");
+      saveHideTimer = setTimeout(hideSavePill, 10000);
+    } else {
+      hideSavePill();
+    }
+  }, 3000);
+}
+
+// Reload mid-save: pick the pill back up.
+window.addEventListener("DOMContentLoaded", async () => {
+  try {
+    const st = await api("GET", "/api/session/save-status");
+    if (st.state === "saving") startSaveWatch();
+  } catch { /* server not ready — nothing to show */ }
+});
 
 // Quick in-chat tone control: a button that expands into the three delivery
 // dials. Saves automatically (debounced); applies to the next message.
@@ -815,7 +923,7 @@ function setupTonePopover() {
     }
   }
 
-  function open() { built ? refresh() : build(); pop.style.display = "block"; btn.classList.add("on"); }
+  function open() { hidePopover("#len-pop", "#len-btn"); built ? refresh() : build(); pop.style.display = "block"; btn.classList.add("on"); }
   function close() { pop.style.display = "none"; btn.classList.remove("on"); }
 
   btn.addEventListener("click", (e) => {
@@ -830,6 +938,81 @@ function setupTonePopover() {
     if (pop.style.display !== "none") close();
   };
   document.addEventListener("click", tonePopDocHandler);
+}
+
+/** Only one session-bar popover at a time: hide the other before opening. */
+function hidePopover(popSel, btnSel) {
+  const p = app.querySelector(popSel); if (p) p.style.display = "none";
+  const b = app.querySelector(btnSel); if (b) b.classList.remove("on");
+}
+
+// Quick in-chat conversation-length control: the "Length" pill expands into a
+// single slider for how many messages a session runs before the wrap-up
+// check-in. Saves automatically (debounced); applies from the next message.
+function setupLengthPopover() {
+  const btn = app.querySelector("#len-btn");
+  const pop = app.querySelector("#len-pop");
+  if (!btn || !pop) return;
+  let built = false, saveTimer = null;
+
+  const readWrap = () => wrapAfterFromUser((appConfig || {}).user || {});
+
+  function build() {
+    const wrapAfter = readWrap();
+    pop.innerHTML = `
+      <h3>How long should conversations run?</h3>
+      <div class="hint">After this many of your messages, I'll check in about wrapping up.</div>
+      <div class="dial">
+        <div class="dial-head"><b>Conversation length</b><span id="lp-val">${wrapAfter} messages</span></div>
+        <input type="range" min="${WRAP_AFTER_MIN}" max="${WRAP_AFTER_MAX}" step="1" id="lp-wrap" value="${wrapAfter}" />
+        <div class="ends"><span>Shorter sessions</span><span>Longer sessions</span></div>
+      </div>
+      <div id="lp-status"></div>`;
+    const s = pop.querySelector("#lp-wrap");
+    s.addEventListener("input", () => { pop.querySelector("#lp-val").textContent = `${s.value} messages`; scheduleSave(); });
+    pop.addEventListener("click", (e) => e.stopPropagation());
+    built = true;
+  }
+
+  function refresh() {
+    const wrapAfter = readWrap();
+    const s = pop.querySelector("#lp-wrap"); if (!s) return;
+    s.value = wrapAfter;
+    pop.querySelector("#lp-val").textContent = `${wrapAfter} messages`;
+    const status = pop.querySelector("#lp-status"); if (status) status.textContent = "";
+  }
+
+  function scheduleSave() {
+    const status = pop.querySelector("#lp-status");
+    if (status) status.textContent = "Saving…";
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(save, 400);
+  }
+
+  async function save() {
+    const wrapAfter = Number(pop.querySelector("#lp-wrap").value);
+    try {
+      const r = await api("POST", "/api/config", { user: { wrapAfter } });
+      appConfig = r.config;
+      pop.querySelector("#lp-status").textContent = "Saved — I'll use this from your next message.";
+    } catch (e) {
+      pop.querySelector("#lp-status").textContent = "Couldn't save: " + e.message;
+    }
+  }
+
+  function open() { hidePopover("#tone-pop", "#tone-btn"); built ? refresh() : build(); pop.style.display = "block"; btn.classList.add("on"); }
+  function close() { pop.style.display = "none"; btn.classList.remove("on"); }
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    pop.style.display === "none" ? open() : close();
+  });
+  if (lenPopDocHandler) document.removeEventListener("click", lenPopDocHandler);
+  lenPopDocHandler = () => {
+    if (!document.body.contains(pop)) return;
+    if (pop.style.display !== "none") close();
+  };
+  document.addEventListener("click", lenPopDocHandler);
 }
 
 /**
@@ -1136,7 +1319,7 @@ function nowExpRow(e) {
   if (e.status === "running") {
     const day = (daysAgo(e.startedAt) ?? 0) + 1;
     const last = (e.checkIns || []).slice(-1)[0];
-    return `<div class="thread-row"><span class="t-kind exp">Experiment</span><span class="t-body">day ${day}: trying <strong>${esc(e.theReplacement)}</strong> instead of ${esc(e.thePattern)} — ${last ? `last check-in: ${esc(String(last.verdict).replace(/-/g, " "))}` : "no check-in yet"}</span></div>`;
+    return `<div class="thread-row"><span class="t-kind exp">Experiment</span><span class="t-body">day ${day}: trying <strong>${esc(e.theReplacement)}</strong>${e.thePattern ? ` instead of ${esc(e.thePattern)}` : ""} — ${last ? `last check-in: ${esc(String(last.verdict).replace(/-/g, " "))}` : "no check-in yet"}</span></div>`;
   }
   if (e.status === "concluded") {
     return `<div class="thread-row"><span class="t-kind exp">Experiment</span><span class="t-body">concluded: ${esc(trunc(e.outcome && e.outcome.summary, 110))}</span></div>`;
@@ -1421,6 +1604,7 @@ function renderSessionsList(body, sessions) {
             <button class="danger" data-del="${esc(s.id)}" style="padding:4px 10px;font-size:0.78rem">Delete</button>
           </div>
           <div class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.8rem">${esc(s.date)} · ${esc(s.summary)}</div>
+          ${s.takeaway ? `<div class="session-takeaway">“${esc(s.takeaway)}”<span class="muted"> — your takeaway, in your words</span></div>` : ""}
           <div class="pill-list">
             ${(s.skills || []).map((k) => `<span class="tag">${esc(k)}</span>`).join("")}
             ${(s.relatedSessions || []).length ? `<span class="tag">↔ ${s.relatedSessions.length} linked</span>` : ""}
@@ -1477,10 +1661,20 @@ function dialsFromUser(u) {
   return { inquisitive: clamp(raw.inquisitive), challenging: clamp(raw.challenging), validating: clamp(raw.validating) };
 }
 
+// Conversation length: after this many of their messages the agent checks in
+// about wrapping up (config user.wrapAfter; engine clamps the same way).
+const WRAP_AFTER_MIN = 20, WRAP_AFTER_MAX = 60, WRAP_AFTER_DEFAULT = 45;
+function wrapAfterFromUser(u) {
+  const n = parseInt(u && u.wrapAfter, 10);
+  const v = Number.isFinite(n) ? n : WRAP_AFTER_DEFAULT;
+  return Math.min(WRAP_AFTER_MAX, Math.max(WRAP_AFTER_MIN, v));
+}
+
 async function renderSettings() {
   const cfg = appConfig || {};
   const u = cfg.user || {};
   const dials = dialsFromUser(u);
+  const wrapAfter = wrapAfterFromUser(u);
   const openerStyle = OPENER_STYLES.some((o) => o.value === u.openerStyle) ? u.openerStyle : "pickup"; // legacy smart/blurb/open → pickup
   if (!providers) { try { providers = await api("GET", "/api/providers"); } catch { providers = []; } }
   app.innerHTML = `
@@ -1499,6 +1693,16 @@ async function renderSettings() {
           <input type="range" min="1" max="5" step="1" id="s-dial-${d.key}" value="${dials[d.key]}" style="width:100%" />
           <div class="row" style="justify-content:space-between"><span class="muted" style="font-size:0.76rem">${d.lo}</span><span class="muted" style="font-size:0.76rem">${d.hi}</span></div>
         </div>`).join("")}
+      <label>How long should conversations run?</label>
+      <p class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.82rem;margin:2px 0 10px">After this many of your messages, I'll check in about wrapping up.</p>
+      <div class="tone-dial" style="margin-bottom:12px">
+        <div class="row" style="justify-content:space-between;align-items:baseline">
+          <label style="margin:0">Conversation length</label>
+          <span class="muted" id="s-wrap-val" style="font-variant-numeric:tabular-nums">${wrapAfter} messages</span>
+        </div>
+        <input type="range" min="${WRAP_AFTER_MIN}" max="${WRAP_AFTER_MAX}" step="1" id="s-wrap" value="${wrapAfter}" style="width:100%" />
+        <div class="row" style="justify-content:space-between"><span class="muted" style="font-size:0.76rem">Shorter sessions</span><span class="muted" style="font-size:0.76rem">Longer sessions</span></div>
+      </div>
       <label>How should I open our conversations?</label>
       <select id="s-opener">
         ${OPENER_STYLES.map((o) => `<option value="${o.value}" ${o.value === openerStyle ? "selected" : ""}>${esc(o.label)}</option>`).join("")}
@@ -1535,6 +1739,8 @@ async function renderSettings() {
     const out = app.querySelector(`#s-dial-val-${d.key}`);
     slider.addEventListener("input", () => { out.textContent = `${slider.value}/5`; });
   }
+  const wrapSlider = app.querySelector("#s-wrap");
+  wrapSlider.addEventListener("input", () => { app.querySelector("#s-wrap-val").textContent = `${wrapSlider.value} messages`; });
 
   app.querySelector("#s-save-you").addEventListener("click", async () => {
     try {
@@ -1546,6 +1752,7 @@ async function renderSettings() {
       const r = await api("POST", "/api/config", { user: {
         name: app.querySelector("#s-name").value.trim(),
         toneDials,
+        wrapAfter: Number(app.querySelector("#s-wrap").value),
         openerStyle: app.querySelector("#s-opener").value,
       }});
       appConfig = r.config; app.querySelector("#s-msg1").textContent = "Saved.";
@@ -1985,7 +2192,7 @@ function briefSectionParts(sec) {
       return {
         intro: UL(sec.items),
         outro: (sec.learned || []).map((e) =>
-          `<div class="b-item"><p>Tried <strong>${esc(e.replacement)}</strong> instead of “${esc(e.pattern)}” — learned: ${esc(e.summary)} <span class="tag">${esc(e.keeping)}</span></p></div>`).join(""),
+          `<div class="b-item"><p>Tried <strong>${esc(e.replacement)}</strong>${e.pattern ? ` instead of “${esc(e.pattern)}”` : ""} — learned: ${esc(e.summary)} <span class="tag">${esc(e.keeping)}</span></p></div>`).join(""),
       };
     case "flags":
       return {
@@ -2040,7 +2247,7 @@ function briefSectionParts(sec) {
       return {
         items: (sec.items || []).map((e) => ({
           id: e.id,
-          html: `<div class="b-item"><p>Instead of “${esc(e.pattern)}” → trying <strong>${esc(e.replacement)}</strong> <span class="tag">${esc(e.status)}</span></p>
+          html: `<div class="b-item"><p>${e.pattern ? `Instead of “${esc(e.pattern)}” → trying ` : "Trying "}<strong>${esc(e.replacement)}</strong> <span class="tag">${esc(e.status)}</span></p>
             ${(e.checkIns || []).map((c) => `<p class="b-meta">check-in ${esc(c.date)}: ${esc(c.note)} <span class="tag">${esc(c.verdict)}</span></p>`).join("")}
             ${e.outcome ? `<p class="b-meta">Concluded — learned: ${esc(e.outcome.summary)} <span class="tag">${esc(e.outcome.keeping)}</span></p>` : ""}</div>`,
         })),
