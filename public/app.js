@@ -12,7 +12,6 @@ let obOptions = null;
 let mode = localStorage.getItem("mode") || "companion";
 // Window/document listeners that must be torn down when a view re-renders,
 // or they accumulate across navigations and stack up work on every scroll/click.
-let chatScrollHandler = null;
 let tonePopDocHandler = null;
 
 // ─── API + utils ───────────────────────────────────────────────────────────
@@ -584,7 +583,6 @@ async function renderChat() {
       <div class="session-bar-inner">
         <span id="lens" class="lens">listening</span>
         <div class="bar-actions">
-          <button id="focus-btn" title="Focus on the latest reply — scroll up for the rest">Focus</button>
           <button id="tone-btn" title="Adjust how I respond to you">Tone</button>
           <button id="end-btn">End session</button>
           <div id="tone-pop" class="tone-pop" style="display:none"></div>
@@ -599,43 +597,6 @@ async function renderChat() {
 
   const scroll = app.querySelector("#chat-scroll");
   const input = app.querySelector("#composer-input");
-
-  // ── Focus mode: keep the latest reply crisp, let the rest recede ──────────
-  const focusBtn = app.querySelector("#focus-btn");
-  let focusOn = localStorage.getItem("focusMode") !== "off"; // default on
-  const lastAssistant = () => { const n = scroll.querySelectorAll(".msg.assistant"); return n.length ? n[n.length - 1] : null; };
-  const markFocused = () => {
-    scroll.querySelectorAll(".msg.focused").forEach((n) => n.classList.remove("focused"));
-    lastAssistant()?.classList.add("focused");
-    scroll.classList.toggle("has-history", scroll.querySelectorAll(".msg").length > 1);
-  };
-  const atBottom = () => window.scrollY >= (document.documentElement.scrollHeight - window.innerHeight - 90);
-  const applyFocusState = () => {
-    if (!document.body.contains(scroll)) return; // stale listener after route change
-    if (!focusOn) return;
-    scroll.classList.toggle("revealed", !atBottom());
-  };
-  const setFocus = (on) => {
-    focusOn = on;
-    localStorage.setItem("focusMode", on ? "on" : "off");
-    focusBtn.classList.toggle("on", on);
-    scroll.classList.toggle("focus", on);
-    markFocused();
-    applyFocusState();
-  };
-  focusBtn.addEventListener("click", () => setFocus(!focusOn));
-  // Tear down the previous chat's scroll handler so they don't pile up across
-  // navigations (stale handlers firing every scroll frame = progressive lag).
-  if (chatScrollHandler) window.removeEventListener("scroll", chatScrollHandler);
-  // Throttle to one layout read per frame — reading scrollHeight on every raw
-  // scroll event was thrashing layout and causing the scroll to stutter.
-  let scrollTick = false;
-  chatScrollHandler = () => {
-    if (scrollTick) return;
-    scrollTick = true;
-    requestAnimationFrame(() => { scrollTick = false; applyFocusState(); });
-  };
-  window.addEventListener("scroll", chatScrollHandler, { passive: true });
 
   let exploring = false;
   const setModeLens = (skill, isSafety) => {
@@ -668,8 +629,6 @@ async function renderChat() {
     if (opener.exercises && opener.exercises.length) renderExercises(scroll, opener.exercises);
   }
   scrollDown();
-  setFocus(focusOn);
-  requestAnimationFrame(applyFocusState);
 
   // Deep-link prefill (e.g. "Talk about this" on an experiment card in Journey).
   const prefill = sessionStorage.getItem("composerPrefill");
@@ -684,7 +643,7 @@ async function renderChat() {
     addBubble(scroll, "user", msg);
     const typing = addBubble(scroll, "assistant", ""); typing.classList.add("loading");
     typing.appendChild(scrollLoader());
-    markFocused(); scrollDown(); requestAnimationFrame(applyFocusState);
+    scrollDown();
     app.querySelector("#send-btn").disabled = true;
 
     // Bubbles stream in progressively — but PACED, not as fast as the model
@@ -715,7 +674,7 @@ async function renderChat() {
       lastBubble = b;
       lastRevealAt = Date.now();
       lastRevealChars = chunkText.length;
-      markFocused(); scrollDown(); requestAnimationFrame(applyFocusState);
+      scrollDown();
     };
     const pump = () => {
       if (revealTimer) return;
@@ -757,8 +716,7 @@ async function renderChat() {
       errBubble.textContent = "(couldn't reach the model: " + e.message + ")";
     } finally {
       app.querySelector("#send-btn").disabled = false;
-      markFocused(); scrollDown(); input.focus();
-      requestAnimationFrame(applyFocusState);
+      scrollDown(); input.focus();
     }
   };
 
