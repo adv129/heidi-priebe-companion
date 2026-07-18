@@ -961,7 +961,6 @@ function setupLengthPopover() {
     const wrapAfter = readWrap();
     pop.innerHTML = `
       <h3>How long should conversations run?</h3>
-      <div class="hint">After this many of your messages, I'll check in about wrapping up.</div>
       <div class="dial">
         <div class="dial-head"><b>Conversation length</b><span id="lp-val">${wrapAfter} messages</span></div>
         <input type="range" min="${WRAP_AFTER_MIN}" max="${WRAP_AFTER_MAX}" step="1" id="lp-wrap" value="${wrapAfter}" />
@@ -1694,7 +1693,6 @@ async function renderSettings() {
           <div class="row" style="justify-content:space-between"><span class="muted" style="font-size:0.76rem">${d.lo}</span><span class="muted" style="font-size:0.76rem">${d.hi}</span></div>
         </div>`).join("")}
       <label>How long should conversations run?</label>
-      <p class="muted" style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.82rem;margin:2px 0 10px">After this many of your messages, I'll check in about wrapping up.</p>
       <div class="tone-dial" style="margin-bottom:12px">
         <div class="row" style="justify-content:space-between;align-items:baseline">
           <label style="margin:0">Conversation length</label>
