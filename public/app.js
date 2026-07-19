@@ -144,6 +144,10 @@ function buildChrome() {
 
 async function handleRoute() {
   if (!appConfig) { try { appConfig = await api("GET", "/api/config"); } catch { appConfig = {}; } }
+  // The frost veil belongs to the chat surface only — never to Journey or
+  // Settings. Drop it on every navigation; renderChat re-frosts from the
+  // polled save-status if the save is still running.
+  document.getElementById("chat-frost")?.remove();
   let path = location.hash.replace("#", "") || "/chat";
   if (path === "/memory" || path.startsWith("/memory/")) { location.hash = "#/journey"; return; }
   if (!appConfig.setupComplete && path !== "/onboard") { location.hash = "#/onboard"; return; }
@@ -611,6 +615,9 @@ async function renderChat() {
   try { sess = await api("GET", "/api/session"); } catch {}
   exploring = sess.mode === "explore";
 
+  let saveSt = { state: "idle" };
+  try { saveSt = await api("GET", "/api/session/save-status"); } catch {}
+
   if (sess.messages && sess.messages.length) {
     sess.messages.forEach((m) => {
       // Chunked assistant messages restore as one bubble each, trace on the
@@ -619,6 +626,15 @@ async function renderChat() {
       parts.forEach((p, i) => addBubble(scroll, m.role, p, i === parts.length - 1 ? m.trace : null));
     });
     setModeLens(sess.activeSkill, false);
+    // A live session while the status says "saving" means a closing card's
+    // head start was abandoned (navigated away mid-card) — discard it so the
+    // conversation can keep moving with a fresh transcript.
+    if (saveSt.state === "saving") api("POST", "/api/session/close-cancel").catch(() => {});
+  } else if (saveSt.state === "saving") {
+    // Mid-save re-entry: the session just ended and its fresh opener isn't
+    // ready yet — frost the conversation surface; the watcher lifts it.
+    frostChat();
+    startSaveWatch();
   } else {
     let opener = { blurb: "Hi. What's on your mind?", options: [] };
     try { opener = await api("GET", "/api/opener"); } catch {}
@@ -734,10 +750,15 @@ async function renderChat() {
   // The closing ritual: instead of a confirm() dialog, an in-chat card asks
   // for a takeaway (their own words) and something to try this week. Both
   // optional — Skip ends the session without them; Keep talking cancels.
+  // The moment the card opens the transcript is final, so the composer freezes
+  // and the server gets a head start on the slow consolidate (close-start —
+  // a pure read; nothing is written unless they actually finish).
   function renderClosingCard() {
     const existing = app.querySelector("#closing-card");
     if (existing) { existing.querySelector("#cc-takeaway").focus(); return; }
     app.querySelector("#close-nudge")?.remove();
+    setComposerEnabled(false);
+    api("POST", "/api/session/close-start").catch(() => {}); // best-effort — end works without it
     const div = document.createElement("div");
     div.id = "closing-card"; div.className = "closing-card";
     div.innerHTML = `
@@ -755,7 +776,12 @@ async function renderChat() {
         <button class="closing-keep" id="cc-keep">Keep talking</button>
       </div>`;
     scroll.appendChild(div); scrollDown();
-    const cancel = () => div.remove();
+    const cancel = () => {
+      div.remove();
+      setComposerEnabled(true);
+      api("POST", "/api/session/close-cancel").catch(() => {}); // discard the head start
+      input.focus();
+    };
     div.querySelector("#cc-x").addEventListener("click", cancel);
     div.querySelector("#cc-keep").addEventListener("click", cancel);
     div.addEventListener("keydown", (e) => { if (e.key === "Escape") cancel(); });
@@ -767,16 +793,24 @@ async function renderChat() {
     setTimeout(() => div.querySelector("#cc-takeaway").focus(), 0);
   }
 
-  // End the session: one fast POST (the save itself runs in the background,
-  // tracked by the app-wide pill), then a fresh opener. No blocking bubble.
+  // End the session: one fast POST, then the conversation frosts over while
+  // the save finishes in the background. The save watcher (header pill +
+  // save-status polling) lifts the frost and reveals the fresh opener — which
+  // the consolidate itself generates, so it's ready exactly when the frost
+  // lifts.
   async function finishSession(ritual) {
     const card = app.querySelector("#closing-card");
     if (card) card.querySelectorAll("button, textarea").forEach((el) => (el.disabled = true));
     try {
       const r = await api("POST", "/api/session/end", ritual);
-      if (r.ended) startSaveWatch(); // pill appears; polls until done/error
       exploring = false;
-      await renderChat(); // fresh opener immediately — the user can keep going or navigate away
+      if (r.ended) {
+        card?.remove();
+        frostChat();
+        startSaveWatch(); // header pill + polling; lifts the frost on done/error
+      } else {
+        await renderChat(); // nothing to save (empty session) — straight to fresh
+      }
     } catch (e) {
       if (card) card.querySelectorAll("button, textarea").forEach((el) => (el.disabled = false));
       addBubble(scroll, "system", "Couldn't end the session: " + e.message);
@@ -797,13 +831,16 @@ async function renderChat() {
   }
 }
 
-// ─── Background-save indicator (app-wide pill in the top bar) ─────────────────
+// ─── Background-save indicator + frosted conversation ─────────────────────────
 //
-// Lives in #topbar so it survives view re-renders — the user can wander to
-// Journey/Settings while the consolidate runs. Polls /api/session/save-status
-// every 3s while a save is in flight; "Saved: {title}" lingers ~6s, an error
-// shows the session-kept reassurance a little longer. On page load, a save
-// already in flight (reload mid-save) resumes the pill.
+// The pill lives INSIDE the top bar (next to the nav) so it survives view
+// re-renders — the user can wander to Journey/Settings while the consolidate
+// runs. Polls /api/session/save-status every 3s while a save is in flight;
+// "Saved ✓" lingers ~4s, an error a little longer. While the save runs, the
+// chat view itself frosts over (see frostChat); the watcher lifts the frost
+// and re-renders the fresh opener when the status lands. Frost presence is
+// driven off the polled status, not transient JS state — a reload or a
+// Journey-and-back mid-save re-frosts from renderChat.
 
 let savePollTimer = null, saveHideTimer = null;
 
@@ -813,7 +850,7 @@ function savePillEl() {
     el = document.createElement("span");
     el.id = "save-pill";
     const right = document.querySelector("#topbar .top-right");
-    if (right) right.parentNode.insertBefore(el, right);
+    if (right) right.insertBefore(el, right.firstChild);
     else document.getElementById("topbar")?.appendChild(el);
   }
   return el;
@@ -831,28 +868,63 @@ function hideSavePill() {
   if (el) el.style.display = "none";
 }
 
+/** Disable/enable the chat composer (closing card open, or save in flight). */
+function setComposerEnabled(on) {
+  const input = document.getElementById("composer-input");
+  const btn = document.getElementById("send-btn");
+  if (input) input.disabled = !on;
+  if (btn) btn.disabled = !on;
+}
+
+/**
+ * Frost the conversation surface while a save runs: a translucent, blurred
+ * veil over the chat area (transcript, session bar, composer) with a quiet
+ * serif line. The header — nav, view switcher — sits above it and stays fully
+ * usable. Removed by liftFrost (save landed) or by handleRoute (navigation;
+ * renderChat re-frosts from save-status if the save is still running).
+ */
+function frostChat() {
+  if (document.getElementById("chat-frost")) return;
+  const div = document.createElement("div");
+  div.id = "chat-frost";
+  div.className = "chat-frost";
+  div.innerHTML = `<div class="chat-frost-line spin">Putting this session to memory</div>`;
+  document.body.appendChild(div);
+  setComposerEnabled(false);
+}
+
+/** The save landed: lift the frost and reveal the fresh chat (new opener). */
+function liftFrost() {
+  const f = document.getElementById("chat-frost");
+  if (!f) return;
+  f.remove();
+  const path = location.hash.replace("#", "") || "/chat";
+  if (path === "/chat") renderChat(); // fresh opener (or the fallback one on error)
+}
+
 function startSaveWatch() {
   clearTimeout(saveHideTimer);
   if (savePollTimer) clearInterval(savePollTimer);
-  showSavePill("Saving session…", "saving");
+  showSavePill("Saving…", "saving");
   savePollTimer = setInterval(async () => {
     let st;
     try { st = await api("GET", "/api/session/save-status"); } catch { return; } // transient — keep polling
     if (st.state === "saving") return;
     clearInterval(savePollTimer); savePollTimer = null;
     if (st.state === "done") {
-      showSavePill(`Saved: “${trunc(st.title || "session", 42)}”`, "done");
-      saveHideTimer = setTimeout(hideSavePill, 6000);
+      showSavePill("Saved ✓", "done");
+      saveHideTimer = setTimeout(hideSavePill, 4000);
     } else if (st.state === "error") {
-      showSavePill("Session kept — saving hit a snag", "error");
-      saveHideTimer = setTimeout(hideSavePill, 10000);
+      showSavePill("Save issue — kept safe", "error");
+      saveHideTimer = setTimeout(hideSavePill, 8000);
     } else {
-      hideSavePill();
+      hideSavePill(); // idle (a cancel raced in) — nothing to report
     }
+    liftFrost();
   }, 3000);
 }
 
-// Reload mid-save: pick the pill back up.
+// Reload mid-save: pick the pill back up (renderChat re-frosts on its own).
 window.addEventListener("DOMContentLoaded", async () => {
   try {
     const st = await api("GET", "/api/session/save-status");
