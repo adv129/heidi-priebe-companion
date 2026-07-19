@@ -643,10 +643,102 @@ function cleanRitualText(v) {
   return typeof v === "string" ? v.trim().slice(0, RITUAL_MAX_CHARS).trim() : "";
 }
 
+// Early-consolidate head start (the closing card). While the person types their
+// takeaway/experiment the transcript is already final, so the slow consolidate
+// model call can run NOW — a pure read; every write (folds, appendSession,
+// setNextOpener) waits for finalize. Single-user app: one module-level slot.
+// { sessionId, promise, cancelled } — promise resolves { parsed, consolidateError }
+// and never rejects.
+let earlyConsolidate = null;
+
+/**
+ * The consolidate model call on a snapshot — the slow part of a save, and a
+ * pure READ (no memory writes). Never rejects: model/parse failures come back
+ * as { parsed: null, consolidateError }.
+ */
+async function runConsolidate(snapshot) {
+  const cfg = loadConfig() || {};
+  const now = new Date();
+  try {
+    const raw = await timedComplete(
+      "consolidate",
+      T.buildConsolidatePrompt({
+        transcript: renderTranscript(snapshot.messages, 1000),
+        skillsUsed: snapshot.skillsUsed,
+        profileBlock: memory.profileContext(),
+        mode: snapshot.mode,
+        hypothesesBlock: memory.hypothesesContext({ mode: "consolidate" }),
+        assignmentsBlock: memory.assignmentsContext(now),
+        openItemsBlock: buildOpenItemsBlock(now),
+        todayLine: timeaware.longNow(now),
+        calendarBlock: timeaware.calendarTable(now),
+      }),
+      { provider: cfg.provider, config: cfg }
+    );
+    const parsed = parseJsonLoose(raw);
+    return { parsed, consolidateError: parsed ? null : "consolidate returned no parseable JSON" };
+  } catch (e) {
+    console.error(`[consolidate] ${e.message}`);
+    return { parsed: null, consolidateError: e.message };
+  }
+}
+
+/**
+ * The closing card just opened: start the consolidate on a snapshot of the
+ * CURRENT session, in the background. current.json is NOT cleared and no
+ * ritual write happens — "Keep talking" must still be able to cancel with
+ * nothing written. The pending snapshot (phase "close-start") is crash
+ * insurance only; resumePendingSave discards it while the session is live.
+ *
+ * Idempotent for the same session; a DIFFERENT session's save in flight →
+ * { ok: false, reason: "save-in-progress" } (the server turns that into 409).
+ */
+function closeStart() {
+  const session = loadCurrent();
+  if (!session || !session.messages.length) return { ok: false, reason: "empty" };
+  if (earlyConsolidate && !earlyConsolidate.cancelled && earlyConsolidate.sessionId === session.id) {
+    return { ok: true, already: true };
+  }
+  if (saveStatus.state === "saving") return { ok: false, reason: "save-in-progress" };
+
+  const snapshot = {
+    phase: "close-start",
+    id: session.id,
+    mode: session.mode,
+    messages: session.messages,
+    skillsUsed: session.skillsUsed,
+    takeaway: null,
+    experimentId: null,
+  };
+  memory.ensureDirs();
+  fs.writeFileSync(PENDING_SAVE_PATH, JSON.stringify(snapshot, null, 2) + "\n");
+  setSaveStatus({ state: "saving" });
+  earlyConsolidate = { sessionId: session.id, cancelled: false, promise: runConsolidate(snapshot) };
+  return { ok: true, started: true };
+}
+
+/**
+ * "Keep talking" / × / Escape while the closing card is open: discard the head
+ * start. Nothing was written, so cancel is just: drop the result, delete the
+ * pending snapshot, status back to idle. The in-flight model call itself is
+ * left to finish and be ignored — killing it would need cancellation plumbing
+ * through the provider layer for a rare path, and the cost is bounded (one
+ * wasted consolidate call).
+ */
+function closeCancel() {
+  if (!earlyConsolidate) return { ok: true, cancelled: false }; // nothing early in flight — leave real saves alone
+  earlyConsolidate.cancelled = true;
+  earlyConsolidate = null;
+  try { fs.unlinkSync(PENDING_SAVE_PATH); } catch {}
+  setSaveStatus({ state: "idle" });
+  return { ok: true, cancelled: true };
+}
+
 /**
  * Synchronous part of ending a session — NO model call, returns immediately.
  *
- * 1. Guards double-saves (a consolidate already in flight → save-in-progress).
+ * 1. Guards double-saves (a consolidate already in flight → save-in-progress;
+ *    this session's own close-start head start is not a double-save).
  * 2. Applies the deterministic closing-ritual writes: the self-authored
  *    experiment lands NOW (it must survive an LLM failure), and the takeaway
  *    rides in the snapshot for appendSession to fold in later.
@@ -658,8 +750,9 @@ function cleanRitualText(v) {
  * ritual: optional { takeaway, experiment } strings from the closing card.
  */
 function endSession(ritual = {}) {
-  if (saveStatus.state === "saving") return { ended: false, reason: "save-in-progress" };
   const session = loadCurrent();
+  const ownEarly = earlyConsolidate && !earlyConsolidate.cancelled && session && earlyConsolidate.sessionId === session.id;
+  if (saveStatus.state === "saving" && !ownEarly) return { ended: false, reason: "save-in-progress" };
   if (!session || !session.messages.length) { clearCurrent(); return { ended: false, reason: "empty" }; }
 
   const takeaway = cleanRitualText(ritual.takeaway);
@@ -672,6 +765,7 @@ function endSession(ritual = {}) {
   }
 
   const snapshot = {
+    phase: "finalize",
     id: session.id,
     mode: session.mode,
     messages: session.messages,
@@ -688,8 +782,11 @@ function endSession(ritual = {}) {
 }
 
 /**
- * Async part of the save: the consolidate model call + folds + appendSession +
- * setNextOpener. Never throws for the normal failure modes:
+ * Async part of the save: the consolidate result + folds + appendSession +
+ * setNextOpener. When closeStart already ran the consolidate for this session,
+ * its result is consumed here (ready → folds land immediately; still running →
+ * they land when it does) instead of a second model call. Never throws for the
+ * normal failure modes:
  *
  * - Model/parse failure → the session node is STILL written, with a
  *   deterministic fallback title (the first user line) and the ritual takeaway
@@ -699,30 +796,17 @@ function endSession(ritual = {}) {
  *   is RETAINED for startup recovery (resumePendingSave).
  */
 async function finishSave(snapshot) {
-  const cfg = loadConfig() || {};
-  const transcript = renderTranscript(snapshot.messages, 1000);
   const now = new Date();
 
-  let parsed = null, consolidateError = null;
-  try {
-    const raw = await timedComplete(
-      "consolidate",
-      T.buildConsolidatePrompt({
-        transcript,
-        skillsUsed: snapshot.skillsUsed,
-        profileBlock: memory.profileContext(),
-        mode: snapshot.mode,
-        hypothesesBlock: memory.hypothesesContext({ mode: "consolidate" }),
-        assignmentsBlock: memory.assignmentsContext(now),
-        openItemsBlock: buildOpenItemsBlock(now),
-        todayLine: timeaware.longNow(now),
-        calendarBlock: timeaware.calendarTable(now),
-      }),
-      { provider: cfg.provider, config: cfg }
-    );
-    parsed = parseJsonLoose(raw);
-    if (!parsed) consolidateError = "consolidate returned no parseable JSON";
-  } catch (e) { consolidateError = e.message; console.error(`[consolidate] ${e.message}`); }
+  // The close-start head start: same session's consolidate already in flight
+  // (or done) — await that instead of running it again.
+  let head = null;
+  if (earlyConsolidate && !earlyConsolidate.cancelled && earlyConsolidate.sessionId === snapshot.id) {
+    head = earlyConsolidate;
+    earlyConsolidate = null; // consumed
+  }
+  const { parsed: rawParsed, consolidateError } = head ? await head.promise : await runConsolidate(snapshot);
+  let parsed = rawParsed;
 
   if (!parsed) {
     // Deterministic fallback: the session (and the ritual data) is never lost
@@ -777,6 +861,20 @@ function resumePendingSave() {
   if (!snapshot || !Array.isArray(snapshot.messages) || !snapshot.messages.length) {
     try { fs.unlinkSync(PENDING_SAVE_PATH); } catch {}
     return null;
+  }
+  // A "close-start" snapshot is only a head start — if the session is still
+  // live in current.json the person never finished the closing card, so the
+  // snapshot is discarded and the session simply continues. Only when
+  // current.json is gone too (a crash squeezed between end's pending write and
+  // clearCurrent can't produce this phase) does it fall through to a real
+  // resume, ending the session without ritual data.
+  if (snapshot.phase === "close-start") {
+    const cur = loadCurrent();
+    if (cur && cur.id === snapshot.id) {
+      console.log(`[save] discarding close-start snapshot for live session ${snapshot.id}`);
+      try { fs.unlinkSync(PENDING_SAVE_PATH); } catch {}
+      return null;
+    }
   }
   console.log(`[save] resuming interrupted save for session ${snapshot.id}`);
   setSaveStatus({ state: "saving" });
@@ -1106,6 +1204,8 @@ module.exports = {
   loadConfig,
   saveConfig,
   handleTurn,
+  closeStart,
+  closeCancel,
   endSession,
   finishSave,
   resumePendingSave,

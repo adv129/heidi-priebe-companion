@@ -301,6 +301,33 @@ async function handleRequest(req, res) {
     return;
   }
 
+  // ── POST /api/session/close-start — the closing card opened ───────────────────
+  // The transcript is final once the card is up, so the slow consolidate model
+  // call starts NOW in the background (a pure read — nothing is written until
+  // /api/session/end). Idempotent for the same session; 409 only when a
+  // DIFFERENT session's save is in flight.
+  if (req.method === "POST" && pathname === "/api/session/close-start") {
+    if (busy) { apiError(res, 409, "busy"); return; }
+    busy = true;
+    try {
+      const r = core.closeStart();
+      if (!r.ok && r.reason === "save-in-progress") { apiError(res, 409, "save in progress"); return; }
+      json(res, 200, r);
+    } catch (e) { if (!res.headersSent) apiError(res, 500, e.message); }
+    finally { busy = false; }
+    return;
+  }
+
+  // ── POST /api/session/close-cancel — "Keep talking": discard the head start ───
+  if (req.method === "POST" && pathname === "/api/session/close-cancel") {
+    if (busy) { apiError(res, 409, "busy"); return; }
+    busy = true;
+    try { json(res, 200, core.closeCancel()); }
+    catch (e) { if (!res.headersSent) apiError(res, 500, e.message); }
+    finally { busy = false; }
+    return;
+  }
+
   // ── POST /api/session/end — snapshot now, consolidate in the background ───────
   // The synchronous part (pending-save snapshot, deterministic closing-ritual
   // writes, clearCurrent) runs under `busy`; the slow consolidate model call is

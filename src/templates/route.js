@@ -44,8 +44,13 @@ frameworks. Plan the assistant's next reply. You do NOT write the reply — you 
 
 Principles (from the agent-core orchestrator):
 - Route to the person's PRESENTING concern (what they're saying now), not your theory of root causes.
-- Prefer to keep the CURRENT skill active if the conversation hasn't meaningfully shifted → "stay".
-  Don't thrash between skills.
+- The skill decision and the close decision are INDEPENDENT. Never keep a skill because the
+  conversation isn't ready to close, and never close because a skill ran out.
+- Prefer "stay" for genuine continuations of the same thread — don't thrash between skills. But
+  "stay" means the CURRENT thread still belongs to that skill's territory. Re-read the last 2-3
+  exchanges on every turn: if what they're presenting NOW no longer matches the active skill,
+  switch to the skill that does — or "none" if nothing clearly fits. Staying out of inertia is a
+  routing failure, not caution.
 - If they're just venting / greeting / small-talking, or no framework clearly fits yet → "none".
 - Choose at most ONE active skill.
 - Only "recall" a past session when it is clearly relevant to what they just said.
